@@ -1,0 +1,80 @@
+# Claude Autopilot 配置文件
+# 复制此文件为 config.yaml 并填入你的配置
+
+# ============================================================
+# Meta-Agent 配置（外层决策 AI）
+# ============================================================
+meta_agent:
+  # 可选: openai | anthropic | deepseek | gemini | ollama | azure
+  provider: deepseek
+
+  # 对应 provider 的模型名
+  model: deepseek-chat
+
+  # API Key（建议用环境变量）
+  api_key: ${DEEPSEEK_API_KEY}
+
+  # 自定义 base_url（兼容 OpenAI 协议的服务都可以填这里）
+  # base_url: https://api.deepseek.com
+
+  # Meta-Agent 系统提示（可自定义角色）
+  system_prompt: |
+    你是一个资深工程师助手，负责协调 Claude Code 完成用户需求。
+    你的职责：
+    1. 分析 Claude Code 的输出，判断任务进度
+    2. 当 Claude Code 遇到问题时，给出解决指令
+    3. 当需要用户确认时，替用户做出合理决策
+    4. 判断任务何时真正完成
+    
+    回复格式：
+    - 如需向 Claude Code 发送指令：直接输出指令文本
+    - 如任务已完成：回复 ##DONE##
+    - 如遇到无法解决的问题：回复 ##BLOCKED## + 原因
+
+  # 最大对话轮数（防止死循环）
+  max_turns: 30
+
+  # 单次请求超时（秒）
+  request_timeout: 60
+
+# ============================================================
+# Claude Code 配置
+# ============================================================
+claude_code:
+  # 自动同意权限请求（等同于 --dangerously-skip-permissions）
+  auto_approve: true
+
+  # 等待 Claude Code 响应的超时（秒）
+  response_timeout: 300
+
+  # Claude Code 启动命令（如果不在 PATH 里，填完整路径）
+  command: claude
+
+  # 工作目录（默认当前目录）
+  # working_dir: /path/to/your/project
+
+# ============================================================
+# Zellij 界面配置
+# ============================================================
+zellij:
+  # 是否启用 Zellij 多面板界面
+  enabled: true
+
+  # 布局模式: split（左右分栏）| tabs（标签页）
+  layout: split
+
+  # 面板比例（左:右）
+  panel_ratio: "40:60"
+
+# ============================================================
+# 日志配置
+# ============================================================
+logging:
+  # 日志目录
+  dir: ~/.autopilot/logs
+
+  # 日志级别: DEBUG | INFO | WARNING | ERROR
+  level: INFO
+
+  # 是否保存完整对话记录
+  save_conversation: true

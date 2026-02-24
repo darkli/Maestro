@@ -1,0 +1,208 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+<!-- [必填] 一句话描述项目用途，列出技术栈和关键端口 -->
+
+$PROJECT_DESCRIPTION
+
+**Tech Stack:**
+- **Frontend:** $FRONTEND_STACK (port $FRONTEND_PORT)
+- **Backend:** $BACKEND_STACK (port $BACKEND_PORT)
+- **Database:** $DATABASE
+
+## Capabilities
+
+<!-- 以下标签由 /init-workflow 自动推断生成，也可手动调整 -->
+<!-- 值为框架名/工具名表示启用，false 表示项目不涉及该能力 -->
+<!-- init-workflow 在初始化时读取此节来裁剪模板中的条件块 -->
+
+| 能力 | 值 |
+|------|-----|
+| frontend | $FRONTEND_FRAMEWORK |
+| backend-api | $BACKEND_FRAMEWORK |
+| database | $DATABASE_TYPE |
+| i18n | $I18N_LIBRARY |
+| testing | $TEST_FRAMEWORK |
+| cross-compile | false |
+| design-system | $DESIGN_SYSTEM |
+| ci-cd | $CI_CD_TOOL |
+| monorepo | false |
+| static-types | $STATIC_TYPES_LANG |
+
+## Build & Development Commands
+
+<!-- [必填] 依赖安装、开发启动、生产构建的完整命令 -->
+
+```bash
+# Install dependencies
+$INSTALL_COMMAND
+
+# Start dev server
+$DEV_COMMAND
+
+# Build for production
+$BUILD_COMMAND
+```
+
+## Testing
+
+<!-- [必填] 测试框架、运行命令、文件命名规范、Mock 规范 -->
+
+**Framework:** $TEST_FRAMEWORK
+
+```bash
+$TEST_COMMAND                # Run once
+$TEST_WATCH_COMMAND          # Watch mode
+```
+
+**Conventions:**
+- Test files co-located with source: `Component.test.tsx`, `util.test.ts`
+<!-- 根据项目实际情况补充：全局 API、Mock 方式、setup 文件等 -->
+
+## Architecture
+
+<!-- [必填] 系统架构图、通信路径、状态管理、后端分层、关键文件 -->
+
+```
+$ARCHITECTURE_DIAGRAM
+```
+
+**Communication paths:**
+| Path | Type | Purpose |
+|------|------|---------|
+| `/api/...` | REST | ... |
+<!-- 如项目使用 WebSocket，添加 WebSocket 路径行 -->
+<!-- | `/ws/...` | WebSocket | ... | -->
+
+**Frontend state management:** $STATE_MANAGEMENT
+
+**Backend layers:** $BACKEND_LAYERS
+
+**Frontend services:** $KEY_SERVICE_FILES
+
+## Key Development Conventions
+
+<!-- [必填] Code Style 和 Adding New Features 是必需的 -->
+<!-- [可选] i18n、Design System、Database 等按需添加 -->
+
+### Code Style
+
+- $INDENTATION indentation, $LANGUAGE throughout
+- Components: PascalCase `.tsx` files. Functions/variables: camelCase
+- Core types defined in `$TYPES_FILE`
+
+### Adding New Features
+
+1. Add types in `$TYPES_FILE`
+2. Add backend API route in `$ROUTES_DIR`
+3. Add frontend API call in `$API_SERVICE_FILE`
+4. Create/modify component
+<!-- 如有 i18n，添加：5. Update all locale files if any UI text changes -->
+
+<!-- ============================================================ -->
+<!-- 以下为可选段落，按需启用                                       -->
+<!-- 以下可选段落与 Capabilities 标签对应                           -->
+<!-- 启用某个能力时（标签值非 false），请取消对应段落的注释并填写内容  -->
+<!-- 启用方法：删除段落首尾的 HTML 注释标记（<!-- 和 -->），保留内容  -->
+<!-- 参考 claude-md-contract.md 了解每个段落的详细要求              -->
+<!-- ============================================================ -->
+
+<!-- ### i18n (Mandatory)
+All UI text must use `t('key')` via $I18N_LIBRARY. **Never hardcode strings.**
+When adding/changing UI text, update all locale files in `$LOCALE_DIR/`:
+$LOCALE_LIST
+Translation keys use `component.element` format (e.g., `nav.dashboard`). -->
+
+<!-- ### Design System ($CSS_FRAMEWORK)
+Use the project's design tokens defined in `$TOKEN_CONFIG_FILE`.
+Key token families:
+- Colors: ...
+- Surfaces: ...
+- Text: ...
+Dark mode uses class-based `dark:` prefix - all UI must work in both themes. -->
+
+<!-- ### Database
+- $DATABASE_TYPE, access layer: `$DB_ACCESS_FILE`
+- All queries **must** use parameterized queries (prevent SQL injection)
+- Never concatenate SQL strings -->
+
+<!-- ### Agent Versioning
+Agent uses semantic versioning. **Every agent code change requires a version bump**
+in `$AGENT_VERSION_FILE`. Recompile with `$AGENT_BUILD_COMMAND` after changes. -->
+
+## Environment Variables
+
+<!-- [可选] 列出项目运行所需的环境变量 -->
+
+<!-- Frontend `.env.local`: `API_KEY` for ... -->
+
+## Language
+
+<!-- [必填] 指定文档和代码标识符的语言 -->
+<!-- 将 $OUTPUT_LANGUAGE 替换为项目实际语言（如 Chinese、English、Japanese 等） -->
+
+All output (analysis, design documents, review reports, commit messages, comments in Workspace files) must be in **$OUTPUT_LANGUAGE**. Code identifiers (variable names, function names, type names) remain in English.
+
+## Multi-Phase Project Tracking
+
+<!-- [可选] 大型任务拆分为多个子任务时的进度追踪规范 -->
+
+When a task is split into multiple sub-tasks (e.g., via `/design`), maintain a project progress file at `.claude/workspace/_progress-$PROJECT.md`. This file is the single source of truth for overall project state.
+
+### When to create
+
+When `/design` or any Skill identifies that a task needs 2+ sub-tasks to complete, create the progress file immediately.
+
+### Format
+
+```markdown
+# 项目进度：$PROJECT_NAME
+
+**创建时间**: YYYY-MM-DD
+**整体设计**: .claude/workspace/design-YYYYMMDD-$NAME/02-design.md
+
+## 子任务
+
+### 1. 子任务名称
+- **状态**: 已完成 / 进行中 / 待执行 / 已阻塞
+- **Workspace**: .claude/workspace/feature-YYYYMMDD-$NAME/
+- **进度**: 阶段 X/Y 已完成，当前在阶段 Z
+- **备注**: [阻塞原因、待修复问题等]
+```
+
+### When to update
+
+- After each Skill run completes or is interrupted, update the relevant sub-task status
+- If a completed sub-task needs rework, mark it back to "进行中" with notes
+- When user says "继续做" or "继续 $PROJECT", read this file first to determine what to do next
+
+### How to resume
+
+When user says "继续做" without specifying a task:
+1. Check `.claude/workspace/_progress-*.md` for any active projects
+2. Read the progress file to understand overall state
+3. Identify the next actionable sub-task (not blocked, not completed)
+4. Resume or start that sub-task, referencing the design workspace and any completed sub-task workspaces as context
+
+## Ongoing Work
+
+<!-- [可选] 配合 /context Skill 使用，管理跨对话的长期任务上下文 -->
+
+长期任务的上下文记录在 `.claude/context/`。每个文件对应一个跨多次对话的长期任务，包含背景、关键文件、会话日志和当前状态。
+
+- 新对话开始时，如果用户提到某个长期任务，先读取 `.claude/context/` 下对应的上下文文件再开始工作
+- 使用 `/context save` 在对话结束前保存上下文
+- 使用 `/context load` 在新对话中加载之前的上下文
+- 使用 `/context list` 查看所有活跃的长期任务
+- 使用 `/context remove` 删除不再需要的上下文文件
+- 使用 `/context clean` 定期清理未被引用的对话记录
+
+## Commit Style
+
+<!-- [必填] 提交消息的语言和格式 -->
+<!-- 将 $COMMIT_LANGUAGE 替换为项目实际语言 -->
+
+Commit messages are concise and action-oriented, in $COMMIT_LANGUAGE. Follow existing style.

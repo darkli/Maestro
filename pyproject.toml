@@ -1,0 +1,24 @@
+[project]
+name = "maestro"
+version = "0.1.0"
+description = "用 Manager Agent 自动驱动编码工具完成开发任务"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0",
+    "anthropic>=0.30",
+    "pyyaml>=6.0",
+    "python-telegram-bot[job-queue]>=21.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+maestro = "maestro.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,21 @@
+# 敏感配置（包含 API Key）
+deploy.env
+config.yaml
+
+# 环境变量文件
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

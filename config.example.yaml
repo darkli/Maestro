@@ -1,0 +1,150 @@
+# ============================================================
+# Maestro 配置文件
+# 复制此文件为 config.yaml（或 ~/.maestro/config.yaml）并填入你的配置
+# 支持 ${ENV_VAR} 语法引用环境变量
+# ============================================================
+
+# ============================================================
+# Manager Agent 配置（外层决策 AI）
+# ============================================================
+manager:
+  # 可选: openai | anthropic | deepseek | gemini | ollama | azure
+  # 也可以是任何兼容 OpenAI 协议的服务（需配合 base_url）
+  provider: deepseek
+
+  # 对应 provider 的模型名
+  model: deepseek-chat
+
+  # API Key（建议用环境变量）
+  api_key: ${DEEPSEEK_API_KEY}
+
+  # 自定义 base_url（兼容 OpenAI 协议的服务都可以填这里）
+  # 常见 provider 会自动设置，无需手动填写：
+  #   deepseek → https://api.deepseek.com
+  #   ollama   → http://localhost:11434/v1
+  #   gemini   → https://generativelanguage.googleapis.com/v1beta/openai/
+  # base_url: https://api.deepseek.com
+
+  # 最大对话轮数（防止死循环）
+  max_turns: 30
+
+  # 单任务费用上限（美元）
+  max_budget_usd: 5.0
+
+  # 单次 LLM 请求超时（秒）
+  request_timeout: 60
+
+  # 失败重试次数
+  retry_count: 3
+
+  # Manager 系统提示（可自定义，留空则使用内置默认 prompt）
+  # 默认 prompt 要求 Manager 以 JSON 格式回复决策
+  # system_prompt: |
+  #   你是资深工程师助手...
+
+# ============================================================
+# 编码工具配置
+# 支持 Claude Code、Gemini CLI、Aider 等任何 CLI 编码工具
+# ============================================================
+coding_tool:
+  # 工具类型:
+  #   claude  — Claude Code 专用模式（JSON 输出、会话恢复、费用追踪）
+  #   generic — 通用模式（适配任何 CLI 工具，stdout 作为输出）
+  type: claude
+
+  # 可执行命令名或完整路径
+  command: claude
+
+  # generic 模式的额外命令行参数（如 ["--message"]）
+  # 完整命令为: command + extra_args + instruction
+  extra_args: []
+
+  # Claude Code 专用: 自动跳过权限确认（--dangerously-skip-permissions）
+  auto_approve: true
+
+  # 单轮 subprocess 超时（秒）
+  timeout: 600
+
+  # ---- 切换到其他工具的示例 ----
+  #
+  # Gemini CLI:
+  # type: generic
+  # command: gemini
+  # extra_args: ["--message"]
+  # timeout: 600
+  #
+  # Aider:
+  # type: generic
+  # command: aider
+  # extra_args: ["--message"]
+  # timeout: 600
+  #
+  # OpenAI Codex CLI:
+  # type: generic
+  # command: codex
+  # extra_args: ["--message"]
+  # timeout: 600
+
+# ============================================================
+# 上下文管理配置
+# ============================================================
+context:
+  # 传给 Manager 的最近轮数（超出的轮次会被压缩为摘要）
+  max_recent_turns: 5
+
+  # 编码工具输出截断长度（字符）
+  # 超出后保留 1/3 头部 + 2/3 尾部
+  max_result_chars: 3000
+
+# ============================================================
+# 安全控制配置
+# ============================================================
+safety:
+  # 死循环检测：连续 N 次相同指令触发熔断
+  max_consecutive_similar: 3
+
+  # 最大并行任务数（VPS 2GB 建议 2-3）
+  max_parallel_tasks: 3
+
+# ============================================================
+# Telegram Bot 配置（远程控制）
+# 设为 enabled: false 可禁用
+# ============================================================
+telegram:
+  enabled: false
+
+  # Bot Token（从 @BotFather 获取）
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+
+  # 授权用户的 chat_id（从 @userinfobot 获取）
+  chat_id: ${TELEGRAM_CHAT_ID}
+
+  # 每轮推送进度通知
+  push_every_turn: true
+
+  # ASK_USER 等待用户回复的超时（秒）
+  ask_user_timeout: 3600
+
+# ============================================================
+# Zellij 终端 UI 配置
+# 提供多面板界面：Manager 日志、编码工具输出、任务状态
+# 设为 enabled: false 可禁用
+# ============================================================
+zellij:
+  enabled: true
+
+  # Zellij 未安装时自动下载预编译二进制（仅 Linux）
+  auto_install: true
+
+# ============================================================
+# 日志配置
+# ============================================================
+logging:
+  # 日志目录
+  dir: ~/.maestro/logs
+
+  # 日志级别: DEBUG | INFO | WARNING | ERROR
+  level: INFO
+
+  # 日志保留天数（超期自动清理）
+  max_days: 30
