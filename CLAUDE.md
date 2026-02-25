@@ -14,7 +14,7 @@ Maestro 是一个 Python CLI 工具，使用可配置的 Manager Agent（通过 
 | backend-api | false |
 | database | false |
 | i18n | false |
-| testing | false |
+| testing | pytest |
 | cross-compile | false |
 | design-system | false |
 | ci-cd | false |
@@ -78,7 +78,13 @@ PYTHONPATH=src python -m maestro.cli run "需求"
 
 ## Testing
 
-当前无测试框架。项目暂未配置测试。
+使用 pytest 框架。运行测试：
+
+```bash
+pytest tests/ -v
+```
+
+测试文件位于 `tests/` 目录，当前覆盖 PromptLoader、ManagerAgent prompt 集成、ManagerConfig 字段、deploy.sh 结构验证等模块。
 
 ## Code Style
 
@@ -130,18 +136,24 @@ PYTHONPATH=src python -m maestro.cli run "需求"
 Maestro/
 ├── pyproject.toml
 ├── config.example.yaml
+├── deploy.sh                 # VPS 部署管理脚本（支持 init/update 参数模式 + 交互菜单）
+├── prompts/                  # Manager Agent 外置 Prompt 文件（支持热加载）
+│   ├── system.md             # 主决策 system prompt
+│   ├── chat.md               # 任务问答 prompt（/chat 命令）
+│   └── free_chat.md          # 自由聊天 prompt
 ├── src/maestro/
 │   ├── __init__.py
 │   ├── cli.py
 │   ├── config.py
 │   ├── orchestrator.py
 │   ├── tool_runner.py
-│   ├── manager_agent.py
+│   ├── manager_agent.py      # 含 PromptLoader 类（prompt 热加载）
 │   ├── state.py
 │   ├── context.py
 │   ├── session.py
 │   ├── registry.py
 │   └── telegram_bot.py
+├── tests/                    # pytest 测试
 └── _legacy/                  # 旧版 autopilot 代码（已弃用）
 ```
 
@@ -153,6 +165,8 @@ Maestro/
 - **文件 IPC**: inbox.txt（用户反馈）+ abort 信号文件 + state.json（状态共享）
 - **Zellij 进程保活**: 任务在 Zellij Session 中运行，SSH 断开后不中断
 - **nohup + PID 文件**: Daemon 管理使用最简方案，不依赖 systemd
+- **Prompt 外置化**: System prompt、chat prompt 等抽取到 `prompts/` 目录的 Markdown 文件中，通过 `PromptLoader` 的 mtime 缓存实现热加载，修改后无需重启服务。不引入模板引擎，保持纯文本简洁性
+- **deploy.sh 分层部署**: 支持 `deploy.sh init`（首次完整部署）和 `deploy.sh update`（仅代码+包增量更新）两种 CLI 参数模式，同时保留交互菜单。`update` 模式自动备份/恢复远端 `prompts/` 目录防止用户自定义被覆盖
 
 ## Configuration
 
@@ -161,6 +175,19 @@ Maestro/
 7 个配置段：`manager`、`coding_tool`、`context`、`safety`、`telegram`、`zellij`、`logging`。
 
 环境变量通过 `${VAR_NAME}` 语法展开。详见 `config.example.yaml`。
+
+### Prompt 外置化配置
+
+`manager` 段支持以下 Prompt 相关字段：
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `system_prompt_file` | 主决策 prompt 文件路径（优先于 `system_prompt` 内联字符串） | 空（使用内置默认值） |
+| `chat_prompt_file` | 任务问答 prompt 文件路径 | 空 |
+| `free_chat_prompt_file` | 自由聊天 prompt 文件路径 | 空 |
+| `decision_style` | 决策风格：`default` / `conservative` / `aggressive` | 空（等同 `default`） |
+
+Prompt 文件支持热加载：修改后下次 `decide()` 调用自动生效，无需重启服务。
 
 ## Language
 
