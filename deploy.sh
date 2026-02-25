@@ -622,19 +622,27 @@ do_update() {
     # deploy.sh update 的 tar 解压会全量覆盖，需要保护用户修改
     run_ssh "
         if [[ -d $DEPLOY_DIR/prompts ]]; then
-            cp -r $DEPLOY_DIR/prompts /tmp/_maestro_prompts_bak
+            if cp -r $DEPLOY_DIR/prompts /tmp/_maestro_prompts_bak; then
+                echo '[远程] prompts 已备份'
+            else
+                echo '[远程 WARN] prompts 备份失败，自定义 prompts 可能被覆盖'
+            fi
         fi
-    " 2>/dev/null || true
+    " || true
 
     do_transfer
 
     # 恢复远端 prompts/（用备份覆盖传输过来的默认版本）
     run_ssh "
         if [[ -d /tmp/_maestro_prompts_bak ]]; then
-            cp -r /tmp/_maestro_prompts_bak/* $DEPLOY_DIR/prompts/ 2>/dev/null || true
+            if cp -r /tmp/_maestro_prompts_bak/* $DEPLOY_DIR/prompts/ 2>/dev/null; then
+                echo '[远程] prompts 已恢复'
+            else
+                echo '[远程 WARN] prompts 恢复失败，请手动检查 /tmp/_maestro_prompts_bak'
+            fi
             rm -rf /tmp/_maestro_prompts_bak
         fi
-    " 2>/dev/null || true
+    " || true
 
     do_remote_quick_update
 
