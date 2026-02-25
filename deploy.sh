@@ -2,7 +2,9 @@
 # ============================================================
 # Maestro VPS 部署管理脚本
 # 在本地 Mac 上执行，通过 SSH 远程管理 VPS 上的 Maestro
-# 用法: bash deploy.sh [deploy.env 路径]
+# 用法: bash deploy.sh [命令] [deploy.env 路径]
+#   命令: init | update | help
+#   无命令时进入交互菜单
 # ============================================================
 set -euo pipefail
 
@@ -21,9 +23,43 @@ err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die()   { err "$@"; exit 1; }
 
 # ============================================================
+# SUBCOMMAND 解析 + help 拦截 + ENV_FILE 确定
+# ============================================================
+case "${1:-}" in
+    -h|--help|help)
+        echo "用法: deploy.sh [命令] [deploy.env 路径]"
+        echo ""
+        echo "命令:"
+        echo "  init     首次部署（完整安装）"
+        echo "  update   业务逻辑更新（仅代码+包）"
+        echo "  help     显示此帮助信息"
+        echo ""
+        echo "无命令时进入交互菜单。"
+        echo ""
+        echo "deploy.env 路径默认为当前目录的 deploy.env"
+        exit 0
+        ;;
+    init|update)
+        SUBCOMMAND="$1"
+        ENV_FILE="${2:-deploy.env}"
+        ;;
+    *)
+        SUBCOMMAND=""
+        if [[ -n "${1:-}" && -f "${1:-}" ]]; then
+            ENV_FILE="$1"
+        elif [[ -n "${1:-}" ]]; then
+            err "未知命令: $1"
+            echo "用法: deploy.sh [init|update|help] [deploy.env 路径]"
+            exit 1
+        else
+            ENV_FILE="${1:-deploy.env}"
+        fi
+        ;;
+esac
+
+# ============================================================
 # 读取配置 + SSH 连接（所有操作共用）
 # ============================================================
-ENV_FILE="${1:-deploy.env}"
 if [[ ! -f "$ENV_FILE" ]]; then
     die "配置文件 $ENV_FILE 不存在，请先复制 deploy.env.example 为 deploy.env 并填入配置"
 fi
@@ -105,21 +141,9 @@ run_ssh_pipe()  { $AUTH_CMD ssh $SSH_OPTS "${VPS_USER}@${VPS_HOST}" "$@"; }
 run_scp()       { $AUTH_CMD scp $SCP_OPTS "$@"; }
 
 # ============================================================
-# 功能 1: 部署 / 更新
+# do_transfer() — 文件传输（从 do_deploy() Phase 1 拆分）
 # ============================================================
-do_deploy() {
-    # 校验部署必填项
-    if [[ "${MANAGER_PROVIDER:-}" != "ollama" && -z "${MANAGER_API_KEY:-}" ]]; then
-        die "部署需要设置 MANAGER_API_KEY（Ollama 除外）"
-    fi
-
-    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
-        info "Claude Code 认证: API Key（按量计费）"
-    else
-        info "Claude Code 认证: 部署后引导 claude login（Max/Pro 订阅）"
-    fi
-
-    # ---- Phase 1: 传输项目文件 ----
+do_transfer() {
     info "========== Phase 1: 传输项目文件 =========="
     run_ssh "mkdir -p $DEPLOY_DIR"
 
@@ -166,10 +190,20 @@ do_deploy() {
     else
         die "不支持的部署方式: $DEPLOY_METHOD（仅支持 rsync | git）"
     fi
+}
 
-    # ---- Phase 2: 远程安装 ----
+# ============================================================
+# do_remote_full_install() — 完整远程安装（从 do_deploy() Phase 2 拆分）
+# ============================================================
+do_remote_full_install() {
+    # 校验部署必填项
+    if [[ "${MANAGER_PROVIDER:-}" != "ollama" && -z "${MANAGER_API_KEY:-}" ]]; then
+        die "部署需要设置 MANAGER_API_KEY（Ollama 除外）"
+    fi
+
     info "========== Phase 2: 远程安装 =========="
 
+    # ---- 构造远程变量注入段 ----
     VARS_SECTION="
 DEPLOY_DIR='${DEPLOY_DIR}'
 VPS_USER='${VPS_USER}'
@@ -183,6 +217,7 @@ TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}'
 SETUP_SYSTEMD='${SETUP_SYSTEMD}'
 "
 
+    # ---- 构造远程安装脚本 ----
     REMOTE_SCRIPT_TMP=$(mktemp)
     cat > "$REMOTE_SCRIPT_TMP" << 'REMOTE_EOF'
 set -euo pipefail
@@ -441,12 +476,48 @@ fi
 ok "远程安装全部完成"
 REMOTE_EOF
 
+    # ---- 管道执行 ----
     { echo "$VARS_SECTION"; cat "$REMOTE_SCRIPT_TMP"; } | run_ssh_pipe bash
     rm -f "$REMOTE_SCRIPT_TMP"
 
-    ok "========== 远程安装完成! =========="
+    ok "远程安装全部完成"
+}
 
-    # ---- Claude Code 认证 + Daemon 启动 ----
+# ============================================================
+# do_remote_quick_update() — 轻量远程更新（新增）
+# ============================================================
+do_remote_quick_update() {
+    info "========== 远程更新 Python 包 =========="
+
+    run_ssh "
+        cd $DEPLOY_DIR
+        source .venv/bin/activate
+        pip install -e . -q
+        echo '[远程 OK] pip install 完成'
+    "
+    ok "Python 包更新完成"
+
+    # systemd 服务重启（如存在且已启用）
+    DAEMON_ENABLED=$(run_ssh "systemctl is-enabled maestro-daemon 2>/dev/null" || true)
+    if [[ "$DAEMON_ENABLED" == "enabled" ]]; then
+        info "重启 maestro-daemon 服务 ..."
+        run_ssh "sudo systemctl restart maestro-daemon"
+        sleep 2
+        DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
+        if [[ "$DAEMON_STATUS" == "active" ]]; then
+            ok "maestro-daemon 已重启"
+        else
+            warn "maestro-daemon 重启异常，请检查: sudo systemctl status maestro-daemon"
+        fi
+    else
+        info "maestro-daemon 未启用，跳过重启"
+    fi
+}
+
+# ============================================================
+# do_claude_auth() — Claude Code 认证引导（从 do_deploy() 尾部拆分）
+# ============================================================
+do_claude_auth() {
     if [[ -z "$ANTHROPIC_API_KEY" ]]; then
         if run_ssh "test -d ~/.claude" 2>/dev/null; then
             ok "Claude Code 已认证（检测到 ~/.claude）"
@@ -508,6 +579,24 @@ REMOTE_EOF
             fi
         fi
     fi
+}
+
+# ============================================================
+# do_init() — 首次部署（组合函数）
+# ============================================================
+do_init() {
+    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
+        info "Claude Code 认证: API Key（按量计费）"
+    else
+        info "Claude Code 认证: 部署后引导 claude login（Max/Pro 订阅）"
+    fi
+
+    do_transfer
+    do_remote_full_install
+
+    ok "========== 远程安装完成! =========="
+
+    do_claude_auth
 
     echo ""
     ok "========== 全部部署完成! =========="
@@ -521,7 +610,41 @@ REMOTE_EOF
 }
 
 # ============================================================
-# 功能 2: 查看状态
+# do_update() — 业务逻辑更新（组合函数，新增）
+# ============================================================
+do_update() {
+    # 前置检查：远程 .venv 是否存在
+    if ! run_ssh "test -d $DEPLOY_DIR/.venv" 2>/dev/null; then
+        die "远程环境未初始化（$DEPLOY_DIR/.venv 不存在），请先执行: deploy.sh init"
+    fi
+
+    # 备份远端 prompts/（如存在用户自定义内容）
+    # deploy.sh update 的 tar 解压会全量覆盖，需要保护用户修改
+    run_ssh "
+        if [[ -d $DEPLOY_DIR/prompts ]]; then
+            cp -r $DEPLOY_DIR/prompts /tmp/_maestro_prompts_bak
+        fi
+    " 2>/dev/null || true
+
+    do_transfer
+
+    # 恢复远端 prompts/（用备份覆盖传输过来的默认版本）
+    run_ssh "
+        if [[ -d /tmp/_maestro_prompts_bak ]]; then
+            cp -r /tmp/_maestro_prompts_bak/* $DEPLOY_DIR/prompts/ 2>/dev/null || true
+            rm -rf /tmp/_maestro_prompts_bak
+        fi
+    " 2>/dev/null || true
+
+    do_remote_quick_update
+
+    echo ""
+    ok "========== 业务逻辑更新完成! =========="
+    echo ""
+}
+
+# ============================================================
+# do_status() — 查看状态（不变）
 # ============================================================
 do_status() {
     info "查询 VPS 状态 ..."
@@ -619,7 +742,7 @@ do_status() {
 }
 
 # ============================================================
-# 功能 3: 清理卸载
+# do_clean() — 清理卸载（不变）
 # ============================================================
 do_clean() {
     echo ""
@@ -765,7 +888,7 @@ ${CLEAN_SCRIPT}" | run_ssh_pipe bash
 }
 
 # ============================================================
-# 主菜单（循环）
+# 交互菜单（改造为 4 项）
 # ============================================================
 show_menu() {
     echo ""
@@ -775,23 +898,39 @@ show_menu() {
     echo ""
     echo "  目标: ${VPS_USER}@${VPS_HOST}:${VPS_PORT}"
     echo ""
-    echo "  1) 部署 / 更新"
-    echo "  2) 查看状态"
-    echo "  3) 清理卸载"
+    echo "  1) 首次部署（完整安装）"
+    echo "  2) 业务逻辑更新（仅代码+包）"
+    echo "  3) 查看状态"
+    echo "  4) 清理卸载"
     echo "  0) 退出"
     echo ""
 }
 
-while true; do
-    show_menu
-    read -r -p "  请选择 [0-3]: " MENU_CHOICE
-    case "$MENU_CHOICE" in
-        1) do_deploy ;;
-        2) do_status ;;
-        3) do_clean ;;
-        0) echo ""; ok "再见！"; exit 0 ;;
-        *) warn "无效选择: $MENU_CHOICE" ;;
-    esac
-    echo ""
-    read -r -p "  按 Enter 返回菜单 ..."
-done
+# ============================================================
+# 入口：参数模式 vs 交互菜单
+# ============================================================
+case "$SUBCOMMAND" in
+    init)
+        do_init
+        ;;
+    update)
+        do_update
+        ;;
+    "")
+        # 无子命令 → 进入交互菜单
+        while true; do
+            show_menu
+            read -r -p "  请选择 [0-4]: " MENU_CHOICE
+            case "$MENU_CHOICE" in
+                1) do_init ;;
+                2) do_update ;;
+                3) do_status ;;
+                4) do_clean ;;
+                0) echo ""; ok "再见！"; exit 0 ;;
+                *) warn "无效选择: $MENU_CHOICE" ;;
+            esac
+            echo ""
+            read -r -p "  按 Enter 返回菜单 ..."
+        done
+        ;;
+esac

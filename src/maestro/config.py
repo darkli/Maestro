@@ -66,6 +66,12 @@ class ManagerConfig:
     retry_count: int = 3
     system_prompt: str = ""
 
+    # ---- Prompt 外置化配置 ----
+    system_prompt_file: str = ""     # system prompt 文件路径（优先于 system_prompt）
+    chat_prompt_file: str = ""       # standalone_chat prompt 文件路径
+    free_chat_prompt_file: str = ""  # free_chat prompt 文件路径
+    decision_style: str = ""         # 决策风格: default | conservative | aggressive
+
 
 @dataclass
 class CodingToolConfig:

@@ -42,6 +42,27 @@ manager:
   # system_prompt: |
   #   你是资深工程师助手...
 
+  # ---- Prompt 外置化配置 ----
+
+  # System prompt 文件路径（优先于上面的 system_prompt 内联字符串）
+  # 支持绝对路径或相对于工作目录的相对路径
+  # 文件不存在时会自动生成默认内容
+  # 修改文件后下次 decide() 调用自动生效（热加载），无需重启
+  # system_prompt_file: prompts/system.md
+
+  # 任务问答 prompt 文件路径（用于 /chat 命令的上下文问答）
+  # chat_prompt_file: prompts/chat.md
+
+  # 自由聊天 prompt 文件路径（用于无任务上下文的聊天）
+  # free_chat_prompt_file: prompts/free_chat.md
+
+  # 决策风格: default | conservative | aggressive
+  # default     — 使用 prompt 文件中的原文（默认）
+  # conservative — 保守模式，多确认、遇到不确定就 ask_user
+  # aggressive   — 激进模式，大胆推进、减少确认
+  # 也可以直接在 prompt 文件中自定义决策原则
+  # decision_style: default
+
 # ============================================================
 # 编码工具配置
 # 支持 Claude Code、Gemini CLI、Aider 等任何 CLI 编码工具
