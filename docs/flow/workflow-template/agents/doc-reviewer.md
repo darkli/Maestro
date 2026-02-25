@@ -93,7 +93,7 @@ version: 1.0.0
   - 修复的版本号是否符合语义版本规则
   - 修复是否引入了新问题
 - **残留问题评估**：逐条评估 MEDIUM 级别残留问题，给出最终处理建议：修复 / 可接受 / 后续处理
-- 注意：注册表完整性（README 计数、init-workflow 列表、settings.json 注册等）**由阶段 4 的 C5 检查负责**，doc-reviewer 仅验证 C5 修复结果，不重复扫描
+- 注意：注册表完整性（README 计数、f-init 列表、settings.json 注册等）**由阶段 4 的 C5 检查负责**，doc-reviewer 仅验证 C5 修复结果，不重复扫描
 
 ## 下游摘要要求
 
@@ -175,7 +175,7 @@ PASS / PASS WITH WARNINGS / 需要修复
    - 修复的版本号是否合理
    - 修复是否引入了新的问题
 3. 逐条评估 MEDIUM 残留问题，给出最终处理建议
-注意：注册表完整性（README 计数、init-workflow 列表等）
+注意：注册表完整性（README 计数、f-init 列表等）
 由阶段 4 的 C5 检查负责，此处仅验证其修复结果
 ```
 

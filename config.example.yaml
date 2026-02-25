@@ -42,6 +42,26 @@ manager:
   # system_prompt: |
   #   你是资深工程师助手...
 
+  # ---- 网络配置 ----
+
+  # IP 协议版本: 控制 Manager 调用 LLM API 时使用的网络协议
+  #   0 = 系统默认（不干预，由操作系统自动选择 IPv4 或 IPv6）
+  #   4 = 强制 IPv4（绑定 0.0.0.0，所有 API 请求只走 IPv4）
+  #   6 = 强制 IPv6（绑定 ::，所有 API 请求只走 IPv6）
+  #
+  # 何时需要设置：
+  #   - VPS 同时有 IPv4 和 IPv6 地址，但 IPv6 被 API 服务商误判地区
+  #     例如：Google Gemini API 根据 IPv6 判定为不支持的地区，返回
+  #     "User location is not supported for the API use" (400) 或
+  #     "PERMISSION_DENIED" (403)，但 IPv4 地址判定正常
+  #   - 此时设为 4，强制所有 API 请求走 IPv4 绕过误判
+  #
+  # 影响范围：Manager Agent 的所有 LLM API 调用（OpenAI/Anthropic/Gemini 等）
+  # 不影响：编码工具（Claude Code/Gemini CLI）的网络行为，它们由各自工具控制
+  #
+  # 通常不需要修改此项，保持默认 0 即可。仅在遇到上述地区误判问题时设为 4。
+  # ip_version: 0
+
   # ---- Prompt 外置化配置 ----
 
   # System prompt 文件路径（优先于上面的 system_prompt 内联字符串）

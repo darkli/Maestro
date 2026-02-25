@@ -218,9 +218,9 @@ Frontend (React:3000) ──REST──▶ Backend (Express:4000) ──▶ Datab
 
 ### 9. Capabilities（能力标签）— 自动生成
 
-**用途**：`/init-workflow` 在生成定制化文件时，读取此节的标签值来裁剪模板中的 `IF:xxx` 条件块。各 Agent 模板在运行时也引用此节判断哪些检查项适用。
+**用途**：`/f-init` 在生成定制化文件时，读取此节的标签值来裁剪模板中的 `IF:xxx` 条件块。各 Agent 模板在运行时也引用此节判断哪些检查项适用。
 
-**生成方式**：由 `/init-workflow` Phase 1 自动推断并写入，也可手动编辑。**用户无需手动创建此节**——Phase 0.7 验证的仍是原有 8 个必需节，Capabilities 在 Phase 1 自动补全。
+**生成方式**：由 `/f-init` Phase 1 自动推断并写入，也可手动编辑。**用户无需手动创建此节**——Phase 0.7 验证的仍是原有 8 个必需节，Capabilities 在 Phase 1 自动补全。
 
 **位置**：紧跟在 `## Project Overview` 之后
 
@@ -252,7 +252,7 @@ Frontend (React:3000) ──REST──▶ Backend (Express:4000) ──▶ Datab
 | static-types | typescript |
 ```
 
-当项目技术栈变化时，运行 `/init-workflow -u` 会自动检测差异并建议更新。
+当项目技术栈变化时，运行 `/f-init -u` 会自动检测差异并建议更新。
 
 **隐式派生标签**（不出现在 Capabilities 表中，从 CLAUDE.md 内容推断）：
 
@@ -380,9 +380,9 @@ Agent 使用语义化版本，每次代码变更必须更新 `agent/version/vers
 
 ### 6. Multi-Phase Project Tracking（多阶段项目追踪）
 
-**适用场景**：大型任务会被 `/design` Skill 拆分为多个子任务时，需要此部分定义进度文件格式和管理规范。
+**适用场景**：大型任务会被 `/f-design` Skill 拆分为多个子任务时，需要此部分定义进度文件格式和管理规范。
 
-**用途**：`/design` Skill 完成时创建进度文件；所有 Skill 启动时检查并更新进度文件；用户说"继续做"时读取进度文件确定下一步。
+**用途**：`/f-design` Skill 完成时创建进度文件；所有 Skill 启动时检查并更新进度文件；用户说"继续做"时读取进度文件确定下一步。
 
 **需要填写的内容**：
 - 进度文件路径规范
@@ -406,13 +406,13 @@ Agent 使用语义化版本，每次代码变更必须更新 `agent/version/vers
 
 ### 7. Ongoing Work（长期任务上下文）
 
-**适用场景**：项目有跨多次对话的长期任务（如持续迭代的功能、长期维护的模块）时填写，配合 `/context` Skill 使用。
+**适用场景**：项目有跨多次对话的长期任务（如持续迭代的功能、长期维护的模块）时填写，配合 `/f-context` Skill 使用。
 
-**用途**：`/context save` 保存和恢复跨对话上下文；新对话开始时 Claude 自动读取上下文文件快速了解任务背景；`/context clean` 清理未被引用的对话记录。
+**用途**：`/f-context save` 保存和恢复跨对话上下文；新对话开始时 Claude 自动读取上下文文件快速了解任务背景；`/f-context clean` 清理未被引用的对话记录。
 
 **需要填写的内容**：
 - 上下文文件存储位置
-- 可用的 `/context` 命令列表
+- 可用的 `/f-context` 命令列表
 
 **示例格式**：
 ```markdown
@@ -421,18 +421,18 @@ Agent 使用语义化版本，每次代码变更必须更新 `agent/version/vers
 长期任务的上下文记录在 `.claude/context/`。每个文件对应一个跨多次对话的长期任务，包含背景、关键文件、会话日志和当前状态。
 
 - 新对话开始时，如果用户提到某个长期任务，先读取 `.claude/context/` 下对应的上下文文件再开始工作
-- 使用 `/context save` 在对话结束前保存上下文
-- 使用 `/context load` 在新对话中加载之前的上下文
-- 使用 `/context list` 查看所有活跃的长期任务
-- 使用 `/context remove` 删除不再需要的上下文文件
-- 使用 `/context clean` 定期清理未被引用的对话记录
+- 使用 `/f-context save` 在对话结束前保存上下文
+- 使用 `/f-context load` 在新对话中加载之前的上下文
+- 使用 `/f-context list` 查看所有活跃的长期任务
+- 使用 `/f-context remove` 删除不再需要的上下文文件
+- 使用 `/f-context clean` 定期清理未被引用的对话记录
 ```
 
 ---
 
 ## 命名约束
 
-工作流系统的 Skill 名称（`feature-dev`、`quick-dev` 等）、Agent 文件名（`code-engineer.md` 等）、Workspace 文件名（`01-requirements.md` 等）是**系统固定标识符**，在 `CLAUDE.md` 和其他配置中**不应引用自定义名称**。这些名称在所有项目中保持一致，确保跨项目的统一执行方式。
+工作流系统的 Skill 名称（`f-dev`、`f-quick-dev` 等）、Agent 文件名（`code-engineer.md` 等）、Workspace 文件名（`01-requirements.md` 等）是**系统固定标识符**，在 `CLAUDE.md` 和其他配置中**不应引用自定义名称**。这些名称在所有项目中保持一致，确保跨项目的统一执行方式。
 
 ---
 
@@ -450,7 +450,7 @@ Agent 使用语义化版本，每次代码变更必须更新 `agent/version/vers
 - [ ] **Adding New Features**：新增功能的必要步骤和顺序已填写
 - [ ] **Commit Style**：语言、格式规范已填写
 - [ ] **Language**：文档语言、代码标识符语言已填写
-- [ ] **Capabilities**（自动生成）：10 个能力标签已填写，值与项目实际技术栈一致。此节由 `/init-workflow` 自动创建，Phase 0.7 不检查此节。
+- [ ] **Capabilities**（自动生成）：10 个能力标签已填写，值与项目实际技术栈一致。此节由 `/f-init` 自动创建，Phase 0.7 不检查此节。
 
 ### 可选部分（按需）
 
@@ -472,6 +472,6 @@ Agent 使用语义化版本，每次代码变更必须更新 `agent/version/vers
 
 ### 功能验证
 
-- [ ] 运行 `/feature-dev 创建一个测试功能`，确认子代理能正确读取 CLAUDE.md
+- [ ] 运行 `/f-dev 创建一个测试功能`，确认子代理能正确读取 CLAUDE.md
 - [ ] 检查 Code Engineer 输出的代码是否符合项目代码风格
 - [ ] 检查 Integration Validator 是否能成功执行构建和测试命令

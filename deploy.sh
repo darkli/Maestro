@@ -31,7 +31,7 @@ case "${1:-}" in
         echo ""
         echo "命令:"
         echo "  init     首次部署（完整安装）"
-        echo "  update   业务逻辑更新（仅代码+包）"
+        echo "  update   业务逻辑更新（代码+包+配置）"
         echo "  help     显示此帮助信息"
         echo ""
         echo "无命令时进入交互菜单。"
@@ -87,9 +87,18 @@ MANAGER_PROVIDER="${MANAGER_PROVIDER:-deepseek}"
 MANAGER_MODEL="${MANAGER_MODEL:-deepseek-chat}"
 MANAGER_API_KEY="${MANAGER_API_KEY:-}"
 MANAGER_BASE_URL="${MANAGER_BASE_URL:-}"
+MANAGER_IP_VERSION="${MANAGER_IP_VERSION:-0}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 SETUP_SYSTEMD="${SETUP_SYSTEMD:-true}"
+MAESTRO_RUN_USER="${MAESTRO_RUN_USER:-viber}"
+MAESTRO_RUN_PASSWORD="${MAESTRO_RUN_PASSWORD:-}"
+
+# 未设密码时自动生成（纯字母数字，避免 shell 转义问题）
+if [[ -z "$MAESTRO_RUN_PASSWORD" && "$MAESTRO_RUN_USER" != "root" ]]; then
+    MAESTRO_RUN_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+    info "已自动生成运行用户密码: $MAESTRO_RUN_PASSWORD"
+fi
 
 # ---- SSH 连接复用（ControlMaster） ----
 # 整个脚本生命周期共用一个 SSH 连接，避免重复认证和触发防暴力破解
@@ -171,7 +180,7 @@ do_transfer() {
         rm -f "$TARBALL"
 
         info "在 VPS 上解压 ..."
-        run_ssh "cd $DEPLOY_DIR && tar xzf _deploy.tar.gz && rm -f _deploy.tar.gz"
+        run_ssh "cd $DEPLOY_DIR && tar xzf _deploy.tar.gz && rm -f _deploy.tar.gz && [[ '$MAESTRO_RUN_USER' != 'root' ]] && chown -R $MAESTRO_RUN_USER:$MAESTRO_RUN_USER $DEPLOY_DIR || true"
         ok "文件传输完成"
 
     elif [[ "$DEPLOY_METHOD" == "git" ]]; then
@@ -190,6 +199,19 @@ do_transfer() {
     else
         die "不支持的部署方式: $DEPLOY_METHOD（仅支持 rsync | git）"
     fi
+}
+
+# ============================================================
+# _set_run_user_password() — 通过管道设置运行用户密码（避免 shell 转义）
+# ============================================================
+_set_run_user_password() {
+    if [[ "$MAESTRO_RUN_USER" == "root" || -z "$MAESTRO_RUN_PASSWORD" ]]; then
+        return
+    fi
+    # 密码通过本地 printf 管道直传给远程 chpasswd，不经过远程 shell 展开
+    # 这样即使密码含 ! $ ` ' " 等特殊字符也不会被转义
+    printf '%s:%s\n' "$MAESTRO_RUN_USER" "$MAESTRO_RUN_PASSWORD" | run_ssh_pipe "chpasswd"
+    ok "用户 $MAESTRO_RUN_USER 密码已设置"
 }
 
 # ============================================================
@@ -215,6 +237,8 @@ MANAGER_BASE_URL='${MANAGER_BASE_URL}'
 TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}'
 TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}'
 SETUP_SYSTEMD='${SETUP_SYSTEMD}'
+MAESTRO_RUN_USER='${MAESTRO_RUN_USER}'
+MANAGER_IP_VERSION='${MANAGER_IP_VERSION}'
 "
 
     # ---- 构造远程安装脚本 ----
@@ -253,6 +277,28 @@ if [[ "$(id -u)" -ne 0 ]]; then
     else
         die "非 root 用户且 sudo 需要密码，请使用 root 用户或配置免密 sudo"
     fi
+fi
+
+# ---- 创建运行用户（非 root，Claude Code 安全要求） ----
+if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+    if ! id "$MAESTRO_RUN_USER" &>/dev/null; then
+        info "创建运行用户: $MAESTRO_RUN_USER ..."
+        $SUDO useradd -m -s /bin/bash "$MAESTRO_RUN_USER"
+        ok "用户 $MAESTRO_RUN_USER 已创建（密码稍后设置）"
+    else
+        ok "用户 $MAESTRO_RUN_USER 已存在"
+    fi
+    RUN_HOME=$(eval echo "~$MAESTRO_RUN_USER")
+
+    # 确保 SSH 密码认证开启（部分云镜像默认关闭）
+    SSHD_CONF="/etc/ssh/sshd_config.d/60-cloudimg-settings.conf"
+    if [[ -f "$SSHD_CONF" ]] && grep -q "PasswordAuthentication no" "$SSHD_CONF"; then
+        echo "PasswordAuthentication yes" > "$SSHD_CONF"
+        systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+        ok "SSH 密码认证已开启"
+    fi
+else
+    RUN_HOME="$HOME"
 fi
 
 # ---- 记录部署前环境快照 ----
@@ -327,8 +373,7 @@ if command -v zellij &>/dev/null || [[ -x "$HOME/.local/bin/zellij" ]]; then
     ok "Zellij 已安装"
 else
     info "安装 Zellij v0.41.2 ..."
-    ZELLIJ_DIR="$HOME/.local/bin"
-    mkdir -p "$ZELLIJ_DIR"
+    ZELLIJ_DIR="/usr/local/bin"
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64)  ZELLIJ_ARCH="x86_64" ;;
@@ -350,6 +395,13 @@ pip install --upgrade pip -q
 pip install -e . -q
 ok "Python 环境配置完成"
 
+# ---- 设置目录所有权 ----
+if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+    info "设置目录权限: $MAESTRO_RUN_USER ..."
+    chown -R "$MAESTRO_RUN_USER:$MAESTRO_RUN_USER" "$DEPLOY_DIR"
+    ok "目录权限已设置"
+fi
+
 # ---- 生成 config.yaml ----
 info "生成 config.yaml ..."
 CONFIG_FILE="$DEPLOY_DIR/config.yaml"
@@ -367,6 +419,10 @@ CFGEOF
 
 if [[ -n "$MANAGER_BASE_URL" ]]; then
     echo "  base_url: \"$MANAGER_BASE_URL\"" >> "$CONFIG_FILE"
+fi
+
+if [[ "$MANAGER_IP_VERSION" != "0" ]]; then
+    echo "  ip_version: $MANAGER_IP_VERSION" >> "$CONFIG_FILE"
 fi
 
 cat >> "$CONFIG_FILE" << CFGEOF
@@ -413,14 +469,16 @@ info "配置环境变量 ..."
 
 DOT_ENV="$DEPLOY_DIR/.env"
 {
-    echo "PATH=$HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+    echo "HOME=$RUN_HOME"
+    echo "PATH=$RUN_HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
     if [[ -n "$ANTHROPIC_API_KEY" ]]; then
         echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
     fi
 } > "$DOT_ENV"
 chmod 600 "$DOT_ENV"
+[[ "$MAESTRO_RUN_USER" != "root" ]] && chown "$MAESTRO_RUN_USER:$MAESTRO_RUN_USER" "$DOT_ENV"
 
-BASHRC="$HOME/.bashrc"
+BASHRC="$RUN_HOME/.bashrc"
 MARKER_START="# >>> maestro >>>"
 MARKER_END="# <<< maestro <<<"
 if [[ -f "$BASHRC" ]]; then
@@ -447,7 +505,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=$VPS_USER
+User=$MAESTRO_RUN_USER
 WorkingDirectory=$DEPLOY_DIR
 EnvironmentFile=$DEPLOY_DIR/.env
 ExecStart=$DEPLOY_DIR/.venv/bin/python -m maestro.telegram_bot --config $DEPLOY_DIR/config.yaml
@@ -461,7 +519,7 @@ SVCEOF
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable maestro-daemon
 
-    if [[ -n "$ANTHROPIC_API_KEY" ]] || [[ -d "$HOME/.claude" ]]; then
+    if [[ -n "$ANTHROPIC_API_KEY" ]] || [[ -d "$RUN_HOME/.claude" ]]; then
         $SUDO systemctl restart maestro-daemon
         ok "systemd 服务已创建并启动"
     else
@@ -480,7 +538,101 @@ REMOTE_EOF
     { echo "$VARS_SECTION"; cat "$REMOTE_SCRIPT_TMP"; } | run_ssh_pipe bash
     rm -f "$REMOTE_SCRIPT_TMP"
 
+    # ---- 设置运行用户密码（本地管道直传，避免 shell 转义） ----
+    _set_run_user_password
+
     ok "远程安装全部完成"
+}
+
+# ============================================================
+# do_update_config() — 远程更新 config.yaml（从 deploy.env 重新生成）
+# ============================================================
+do_update_config() {
+    info "========== 更新远程 config.yaml =========="
+
+    # 校验 API Key
+    if [[ "${MANAGER_PROVIDER:-}" != "ollama" && -z "${MANAGER_API_KEY:-}" ]]; then
+        die "更新配置需要设置 MANAGER_API_KEY（Ollama 除外）"
+    fi
+
+    # 构造 config.yaml 内容
+    local TG_ENABLED="false"
+    [[ -n "$TELEGRAM_BOT_TOKEN" ]] && TG_ENABLED="true"
+
+    local CONFIG_CONTENT
+    CONFIG_CONTENT="# 由 deploy.sh 自动生成
+manager:
+  provider: $MANAGER_PROVIDER
+  model: $MANAGER_MODEL
+  api_key: \"$MANAGER_API_KEY\""
+
+    if [[ -n "$MANAGER_BASE_URL" ]]; then
+        CONFIG_CONTENT="$CONFIG_CONTENT
+  base_url: \"$MANAGER_BASE_URL\""
+    fi
+
+    if [[ "$MANAGER_IP_VERSION" != "0" ]]; then
+        CONFIG_CONTENT="$CONFIG_CONTENT
+  ip_version: $MANAGER_IP_VERSION"
+    fi
+
+    CONFIG_CONTENT="$CONFIG_CONTENT
+  max_turns: 30
+  max_budget_usd: 5.0
+  request_timeout: 60
+  retry_count: 3
+
+coding_tool:
+  type: claude
+  command: claude
+  auto_approve: true
+  timeout: 600
+
+context:
+  max_recent_turns: 5
+  max_result_chars: 3000
+
+safety:
+  max_consecutive_similar: 3
+  max_parallel_tasks: 3
+
+telegram:
+  enabled: $TG_ENABLED
+  bot_token: \"$TELEGRAM_BOT_TOKEN\"
+  chat_id: \"$TELEGRAM_CHAT_ID\"
+  push_every_turn: true
+  ask_user_timeout: 3600
+
+zellij:
+  enabled: true
+  auto_install: true
+
+logging:
+  dir: ~/.maestro/logs
+  level: INFO
+  max_days: 30"
+
+    # 获取运行用户的 HOME
+    local RUN_HOME
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        RUN_HOME=$(run_ssh "eval echo ~$MAESTRO_RUN_USER")
+    else
+        RUN_HOME=$(run_ssh "echo \$HOME")
+    fi
+
+    # 写入远程 config.yaml
+    echo "$CONFIG_CONTENT" | run_ssh_pipe "cat > $DEPLOY_DIR/config.yaml && chmod 600 $DEPLOY_DIR/config.yaml && [[ '$MAESTRO_RUN_USER' != 'root' ]] && chown $MAESTRO_RUN_USER:$MAESTRO_RUN_USER $DEPLOY_DIR/config.yaml || true"
+
+    # 同步更新 .env 文件（ANTHROPIC_API_KEY 等环境变量）
+    local ENV_CONTENT="HOME=$RUN_HOME
+PATH=$RUN_HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
+        ENV_CONTENT="$ENV_CONTENT
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+    fi
+    echo "$ENV_CONTENT" | run_ssh_pipe "cat > $DEPLOY_DIR/.env && chmod 600 $DEPLOY_DIR/.env && [[ '$MAESTRO_RUN_USER' != 'root' ]] && chown $MAESTRO_RUN_USER:$MAESTRO_RUN_USER $DEPLOY_DIR/.env || true"
+
+    ok "config.yaml 和 .env 已更新"
 }
 
 # ============================================================
@@ -489,23 +641,39 @@ REMOTE_EOF
 do_remote_quick_update() {
     info "========== 远程更新 Python 包 =========="
 
-    run_ssh "
-        cd $DEPLOY_DIR
-        source .venv/bin/activate
-        pip install -e . -q
-        echo '[远程 OK] pip install 完成'
-    "
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        run_ssh "su - $MAESTRO_RUN_USER -c 'cd $DEPLOY_DIR && source .venv/bin/activate && pip install -e . -q && echo \"[远程 OK] pip install 完成\"'"
+    else
+        run_ssh "cd $DEPLOY_DIR && source .venv/bin/activate && pip install -e . -q && echo '[远程 OK] pip install 完成'"
+    fi
     ok "Python 包更新完成"
 
-    # systemd 服务重启（如存在且已启用）
+    # 更新 systemd 服务文件（确保 User 与当前配置一致）
     DAEMON_ENABLED=$(run_ssh "systemctl is-enabled maestro-daemon 2>/dev/null" || true)
     if [[ "$DAEMON_ENABLED" == "enabled" ]]; then
-        info "重启 maestro-daemon 服务 ..."
-        run_ssh "sudo systemctl restart maestro-daemon"
+        info "更新并重启 maestro-daemon 服务 ..."
+        # 重新生成 service 文件（确保 User 正确）
+        local SVC_CONTENT="[Unit]
+Description=Maestro Telegram Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=${MAESTRO_RUN_USER}
+WorkingDirectory=${DEPLOY_DIR}
+EnvironmentFile=${DEPLOY_DIR}/.env
+ExecStart=${DEPLOY_DIR}/.venv/bin/python -m maestro.telegram_bot --config ${DEPLOY_DIR}/config.yaml
+Restart=on-failure
+RestartSec=30
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target"
+        echo "$SVC_CONTENT" | run_ssh_pipe "cat > /etc/systemd/system/maestro-daemon.service && systemctl daemon-reload && systemctl restart maestro-daemon"
         sleep 2
         DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
         if [[ "$DAEMON_STATUS" == "active" ]]; then
-            ok "maestro-daemon 已重启"
+            ok "maestro-daemon 已重启（User=${MAESTRO_RUN_USER}）"
         else
             warn "maestro-daemon 重启异常，请检查: sudo systemctl status maestro-daemon"
         fi
@@ -518,9 +686,17 @@ do_remote_quick_update() {
 # do_claude_auth() — Claude Code 认证引导（从 do_deploy() 尾部拆分）
 # ============================================================
 do_claude_auth() {
+    # 获取运行用户的 HOME
+    local RUN_HOME
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        RUN_HOME=$(run_ssh "eval echo ~$MAESTRO_RUN_USER")
+    else
+        RUN_HOME=$(run_ssh "echo \$HOME")
+    fi
+
     if [[ -z "$ANTHROPIC_API_KEY" ]]; then
-        if run_ssh "test -d ~/.claude" 2>/dev/null; then
-            ok "Claude Code 已认证（检测到 ~/.claude）"
+        if run_ssh "test -d $RUN_HOME/.claude" 2>/dev/null; then
+            ok "Claude Code 已认证（检测到 $RUN_HOME/.claude）"
 
             if [[ -n "$TELEGRAM_BOT_TOKEN" && "$SETUP_SYSTEMD" == "true" ]]; then
                 DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
@@ -545,16 +721,19 @@ do_claude_auth() {
             echo "  请打开另一个终端窗口，执行以下命令："
             echo ""
             echo -e "    ${GREEN}ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}${NC}"
+            if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
+                echo -e "    ${GREEN}su - $MAESTRO_RUN_USER${NC}"
+            fi
             echo -e "    ${GREEN}claude login${NC}"
             echo ""
             echo "  按提示在浏览器中完成授权。"
-            echo "  认证信息保存在 ~/.claude/，所有终端会话共享，只需登录一次。"
+            echo "  认证信息保存在 $RUN_HOME/.claude/，所有终端会话共享，只需登录一次。"
             echo ""
             echo -e "${YELLOW}  完成后回到此窗口按 Enter 继续 ...${NC}"
             read -r < /dev/tty
 
             info "检查 Claude Code 认证状态 ..."
-            if run_ssh "test -d ~/.claude" 2>/dev/null; then
+            if run_ssh "test -d $RUN_HOME/.claude" 2>/dev/null; then
                 ok "Claude Code 认证成功"
 
                 if [[ -n "$TELEGRAM_BOT_TOKEN" && "$SETUP_SYSTEMD" == "true" ]]; then
@@ -569,7 +748,7 @@ do_claude_auth() {
                     fi
                 fi
             else
-                warn "未检测到 ~/.claude 目录，claude login 可能未完成"
+                warn "未检测到 $RUN_HOME/.claude 目录，claude login 可能未完成"
                 echo ""
                 echo "  你可以稍后 SSH 到 VPS 手动执行："
                 echo "    claude login"
@@ -597,15 +776,78 @@ do_init() {
     ok "========== 远程安装完成! =========="
 
     do_claude_auth
+    _print_summary "init"
+}
+
+# ============================================================
+# _print_summary() — 部署完成后输出汇总信息
+# ============================================================
+_print_summary() {
+    local mode="${1:-init}"
+
+    # 获取 daemon 状态
+    local daemon_status
+    daemon_status=$(run_ssh "systemctl is-active maestro-daemon 2>/dev/null" || echo "未安装")
+
+    # 获取 Claude 认证状态
+    local claude_auth="未认证"
+    local run_home
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        run_home=$(run_ssh "eval echo ~$MAESTRO_RUN_USER" 2>/dev/null)
+    else
+        run_home=$(run_ssh "echo \$HOME" 2>/dev/null)
+    fi
+    if run_ssh "test -d ${run_home}/.claude" 2>/dev/null; then
+        claude_auth="已认证"
+    fi
 
     echo ""
-    ok "========== 全部部署完成! =========="
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+    if [[ "$mode" == "init" ]]; then
+        echo -e "${GREEN}║          部署完成！以下是你的环境信息                ║${NC}"
+    else
+        echo -e "${GREEN}║          更新完成！以下是你的环境信息                ║${NC}"
+    fi
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo "  部署目录: $DEPLOY_DIR"
-    echo "  使用方式:"
-    echo "    ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}"
-    echo "    cd $DEPLOY_DIR && source .venv/bin/activate"
-    echo "    maestro run \"你的需求\""
+    echo -e "  ${CYAN}VPS 连接${NC}"
+    echo "    地址: ${VPS_HOST}:${VPS_PORT}"
+    echo "    SSH 用户: ${VPS_USER}"
+    echo ""
+    echo -e "  ${CYAN}Maestro 运行用户${NC}"
+    echo "    用户名: ${MAESTRO_RUN_USER}"
+    if [[ -n "$MAESTRO_RUN_PASSWORD" ]]; then
+        echo "    密码: ${MAESTRO_RUN_PASSWORD}"
+    fi
+    echo ""
+    echo -e "  ${CYAN}服务状态${NC}"
+    echo "    部署目录: ${DEPLOY_DIR}"
+    echo "    Telegram Daemon: ${daemon_status}"
+    echo "    Claude Code 认证: ${claude_auth}"
+    echo "    Manager: ${MANAGER_PROVIDER}/${MANAGER_MODEL}"
+    echo ""
+    echo -e "  ${CYAN}使用方式${NC}"
+    echo ""
+    echo "    方式 1: Telegram Bot 远程控制（推荐）"
+    echo "      发送: /run <工作目录> <需求描述>"
+    echo ""
+    echo "    方式 2: SSH 到 VPS 手动运行"
+    echo -e "      ${GREEN}ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}${NC}"
+    if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
+        echo -e "      ${GREEN}su - $MAESTRO_RUN_USER${NC}"
+    fi
+    echo -e "      ${GREEN}cd $DEPLOY_DIR && source .venv/bin/activate${NC}"
+    echo -e "      ${GREEN}maestro run \"你的需求\"${NC}"
+
+    if [[ "$claude_auth" == "未认证" ]]; then
+        echo ""
+        echo -e "  ${YELLOW}⚠ Claude Code 尚未认证，请先执行:${NC}"
+        echo -e "      ${GREEN}ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}${NC}"
+        if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
+            echo -e "      ${GREEN}su - $MAESTRO_RUN_USER${NC}"
+        fi
+        echo -e "      ${GREEN}claude login${NC}"
+    fi
     echo ""
 }
 
@@ -613,6 +855,16 @@ do_init() {
 # do_update() — 业务逻辑更新（组合函数，新增）
 # ============================================================
 do_update() {
+    # 前置检查：确保运行用户存在
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        if ! run_ssh "id $MAESTRO_RUN_USER" 2>/dev/null; then
+            info "创建运行用户: $MAESTRO_RUN_USER ..."
+            run_ssh "useradd -m -s /bin/bash $MAESTRO_RUN_USER"
+            _set_run_user_password
+            ok "用户 $MAESTRO_RUN_USER 已创建"
+        fi
+    fi
+
     # 前置检查：远程 .venv 是否存在
     if ! run_ssh "test -d $DEPLOY_DIR/.venv" 2>/dev/null; then
         die "远程环境未初始化（$DEPLOY_DIR/.venv 不存在），请先执行: deploy.sh init"
@@ -644,11 +896,12 @@ do_update() {
         fi
     " || true
 
+    # 从 deploy.env 重新生成远程 config.yaml（确保 API Key 等配置同步）
+    do_update_config
+
     do_remote_quick_update
 
-    echo ""
-    ok "========== 业务逻辑更新完成! =========="
-    echo ""
+    _print_summary "update"
 }
 
 # ============================================================
@@ -896,7 +1149,7 @@ ${CLEAN_SCRIPT}" | run_ssh_pipe bash
 }
 
 # ============================================================
-# 交互菜单（改造为 4 项）
+# 交互菜单（5 项）
 # ============================================================
 show_menu() {
     echo ""
@@ -907,7 +1160,7 @@ show_menu() {
     echo "  目标: ${VPS_USER}@${VPS_HOST}:${VPS_PORT}"
     echo ""
     echo "  1) 首次部署（完整安装）"
-    echo "  2) 业务逻辑更新（仅代码+包）"
+    echo "  2) 业务逻辑更新（代码+包+配置）"
     echo "  3) 查看状态"
     echo "  4) 清理卸载"
     echo "  0) 退出"

@@ -36,28 +36,51 @@ version: 2.0.0
 
 ### 第一步：环境准备
 
+<!-- PROJECT-SPECIFIC: 依赖安装命令 -->
 ```bash
 npm install
 cd backend && npm install
 ```
+<!-- /PROJECT-SPECIFIC -->
 
 运行 CLAUDE.md 中 Build & Development Commands 部分的依赖安装命令。
 
 ```bash
-npm run build
-cd backend && npm run build
+python -m build
 ```
 
 运行 CLAUDE.md 中 Build & Development Commands 部分的构建命令。
 
 
-### 第三步：测试（已跳过）
+### 第三步：单元测试
 
-> 项目未配置测试框架（`testing: false`），测试步骤已跳过。
+根据 CLAUDE.md 中 Testing 部分的命令运行测试。
 
-**替代验证**：
-- [ ] 手动验证核心功能正常
-- [ ] 代码审查中已覆盖异常场景
+```bash
+pytest tests/ -v
+```
+
+**覆盖率要求**：
+| 指标 | 最低要求 |
+|------|----------|
+| 语句覆盖率 | >= 80% |
+| 分支覆盖率 | >= 75% |
+| 函数覆盖率 | >= 90% |
+| 行覆盖率 | >= 80% |
+
+
+### 第四步：集成测试
+
+```bash
+pytest tests/ -v -- integration
+```
+
+**集成测试验证矩阵**：
+
+
+
+
+
 
 
 ### 第七步：安全检查
@@ -79,9 +102,7 @@ cd backend && npm run build
 运行 CLAUDE.md 中 Build & Development Commands 部分指定的构建命令，确认无错误。
 
 ```bash
-npm run build
-ls -lh dist/
-cd backend && npm run build
+python -m build
 ```
 
 ### 第九步：性能基准（如适用）
@@ -103,6 +124,9 @@ cd backend && npm run build
 ## 验证摘要
 | 检查项 | 状态 | 详情 |
 |--------|------|------|
+| 单元测试 | PASS/FAIL | X/Y 通过 |
+| 集成测试 | PASS/FAIL | X/Y 通过 |
+| 覆盖率 | PASS/FAIL | 语句 X% / 分支 X% / 函数 X% / 行 X% |
 | 安全检查 | PASS/FAIL | 问题数 |
 | 性能 | PASS/FAIL/N/A | |
 
@@ -141,6 +165,7 @@ PASS / FAIL / PASS WITH WARNINGS
 |------|------|
 | `$WS/01-requirements.md` | 验收标准——验证功能是否满足需求 |
 | `$WS/02-design.md` | 接口定义——API 契约验证的依据 |
+| `$WS/03-testplan.md` | 测试计划——确保所有测试用例已覆盖 |
 | `$WS/04-implementation.md` | 变更文件清单——确定验证范围 |
 | `$WS/05-review.md` | 审查报告——确认 Critical/High 问题已修复 |
 | `$WS/00-context.md` | 项目规范——覆盖率阈值、i18n 要求等 |
@@ -165,6 +190,8 @@ PASS / FAIL / PASS WITH WARNINGS
 ### 验证结果表
 | 检查项 | 状态 | 备注 |
 |--------|------|------|
+| 测试套件 | PASS/FAIL | X/Y 通过 |
+| 覆盖率 | PASS/FAIL | X% |
 
 ### 未修复问题
 （如有 FAIL 项，简述原因和修复建议）

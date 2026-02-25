@@ -231,6 +231,20 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 # Provider 工厂
 # ============================================================
 
+def _build_httpx_client(ip_version: int):
+    """根据 IP 版本配置构建 httpx 客户端（强制 IPv4/IPv6）"""
+    import httpx
+    if ip_version == 4:
+        transport = httpx.HTTPTransport(local_address="0.0.0.0")
+        logger.info("网络配置: 强制使用 IPv4")
+        return httpx.Client(transport=transport)
+    elif ip_version == 6:
+        transport = httpx.HTTPTransport(local_address="::")
+        logger.info("网络配置: 强制使用 IPv6")
+        return httpx.Client(transport=transport)
+    return None
+
+
 def _get_openai_compatible_client(config: ManagerConfig):
     """构建 OpenAI 兼容客户端（支持 DeepSeek、Ollama、Azure 等）"""
     from openai import OpenAI
@@ -245,6 +259,12 @@ def _get_openai_compatible_client(config: ManagerConfig):
         kwargs["api_key"] = "ollama"
     elif config.provider == "gemini":
         kwargs["base_url"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+    # 强制 IP 版本（解决 IPv6 被误判地区导致 API 拒绝的问题）
+    http_client = _build_httpx_client(config.ip_version)
+    if http_client:
+        kwargs["http_client"] = http_client
+
     return OpenAI(**kwargs)
 
 
@@ -280,7 +300,11 @@ class ManagerAgent:
         """初始化对应 provider 的客户端"""
         if self.config.provider == "anthropic":
             from anthropic import Anthropic
-            self._anthropic_client = Anthropic(api_key=self.config.api_key)
+            kwargs = {"api_key": self.config.api_key}
+            http_client = _build_httpx_client(self.config.ip_version)
+            if http_client:
+                kwargs["http_client"] = http_client
+            self._anthropic_client = Anthropic(**kwargs)
             self._use_anthropic = True
         else:
             self._openai_client = _get_openai_compatible_client(self.config)

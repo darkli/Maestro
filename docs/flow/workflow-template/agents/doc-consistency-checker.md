@@ -137,8 +137,8 @@ version: 1.0.0
    - "<!-- PROJECT-SPECIFIC-START" ... "PROJECT-SPECIFIC-END -->" 块
 
 3. 判断规则：
-   - 安装副本中存在未替换标记 → 问题（应已被 init-workflow 替换）
-   - 模板文件中存在标记 → 正常（这些是给 init-workflow 用的占位符）
+   - 安装副本中存在未替换标记 → 问题（应已被 f-init 替换）
+   - 模板文件中存在标记 → 正常（这些是给 f-init 用的占位符）
 
 4. 工具使用：
    - Grep: 搜索占位符模式（扫描范围根据上述规则确定）
@@ -164,10 +164,10 @@ version: 1.0.0
 1. 检查以下固定标识符是否被变更：
 
    Skill 目录名（必须与 name: 字段完全一致）：
-   feature-dev / quick-dev / light-dev / fix-bug / design / test / context / workspace / doc-dev
+   f-product / f-dev / f-quick-dev / f-light-dev / f-bugfix / f-design / f-test / f-context / f-workspace / f-doc / f-clean
 
    Agent 文件名：
-   requirements-analyst.md / system-designer.md / test-engineer.md
+   product-designer.md / requirements-analyst.md / system-designer.md / test-engineer.md
    code-engineer.md / code-reviewer.md / integration-validator.md
    documentation-writer.md / doc-consistency-checker.md / doc-reviewer.md
 
@@ -227,11 +227,11 @@ version: 1.0.0
       - Skills 速查手册中每个命令的描述、阶段数、确认点数
         vs 对应 SKILL.md frontmatter 和流程定义
 
-   d) 注册表完整性（init-workflow 和 settings.json）：
-      - init-workflow 的 mkdir 命令中的目录列表 vs 实际 Skill 目录
-      - init-workflow 的文件数量检查（阶段 4 和 U4）vs 实际文件数
-      - init-workflow 阶段 5 报告列表 vs 实际文件
-      - init-workflow 命名约束列表 vs 实际 Skill/Agent/Workspace 名
+   d) 注册表完整性（f-init 和 settings.json）：
+      - f-init 的 mkdir 命令中的目录列表 vs 实际 Skill 目录
+      - f-init 的文件数量检查（阶段 4 和 U4）vs 实际文件数
+      - f-init 阶段 5 报告列表 vs 实际文件
+      - f-init 命名约束列表 vs 实际 Skill/Agent/Workspace 名
       - settings.json 中的 hook 注册条目 vs hooks/ 目录下实际 .sh 文件
 
 3. 工具使用：
@@ -239,21 +239,21 @@ version: 1.0.0
      Glob("docs/flow/workflow-template/skills/*/SKILL.md")
      Glob("docs/flow/workflow-template/agents/*.md")
      Glob("docs/flow/workflow-template/hooks/*.sh")
-   - Read: 读取 README、init-workflow SKILL.md、settings.json
+   - Read: 读取 README、f-init SKILL.md、settings.json
    - Grep: 提取文件列表、计数和注册条目
 ```
 
 **严重级别**：
 - 文件计数错误（实际与声明不一致） → **HIGH**
 - 文件列表缺失条目（新增文件未列入 README） → **HIGH**
-- 注册表不完整（init-workflow 缺少目录/文件、settings.json 缺少 hook 注册） → **HIGH**
+- 注册表不完整（f-init 缺少目录/文件、settings.json 缺少 hook 注册） → **HIGH**
 - 功能描述过时（阶段数、确认点数与 SKILL.md 不一致） → **MEDIUM**
 - 文件结构树过时 → **MEDIUM**
 
 **自动修复**：
 - 文件计数 → 直接修正为实际数量
 - 文件列表缺失 → 添加缺失条目（参考同类条目的格式）
-- 注册表不完整 → 在 init-workflow/settings.json 中补充缺失条目
+- 注册表不完整 → 在 f-init/settings.json 中补充缺失条目
 - 功能描述 → 根据 SKILL.md 更新
 - 文件结构树 → 根据实际目录重新生成
 
@@ -326,11 +326,11 @@ version: 1.0.0
 **严重级别**：
 - 模板有结构性变更但安装副本未同步 → **MEDIUM**（不自动修复，因安装副本包含项目定制内容）
 - 模板修改了关键逻辑但安装副本未同步 → **MEDIUM**
-- 模板有轻微文字修改但安装副本未同步 → **LOW**（可在下次 init-workflow -u 时处理）
+- 模板有轻微文字修改但安装副本未同步 → **LOW**（可在下次 f-init -u 时处理）
 
 **自动修复**：
 - C7 类问题**不自动修复**安装副本（安装副本经过 PROJECT-SPECIFIC 处理和用户手动定制，自动修复可能破坏定制内容）
-- 报告并建议用户运行 `/init-workflow -u` 升级
+- 报告并建议用户运行 `/f-init -u` 升级
 - 这是 7 类检查中唯一不执行自动修复的类别
 
 ---

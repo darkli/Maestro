@@ -38,8 +38,9 @@ class TelegramDaemon:
     3. ASK_USER 通知 + 直接回复路由
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, config_path: str = "config.yaml"):
         self.config = config
+        self._config_path = os.path.abspath(config_path)
         self.registry = TaskRegistry(
             max_parallel_tasks=config.safety.max_parallel_tasks
         )
@@ -47,6 +48,8 @@ class TelegramDaemon:
         self._last_states: dict[str, dict] = {}
         # 消息 ID → task_id 映射（用于直接回复路由）
         self._message_task_map: dict[int, str] = {}
+        # 自由聊天对话历史（最近 20 条消息）
+        self._free_chat_history: list[dict] = []
 
     async def start(self):
         """启动 Daemon"""
@@ -83,6 +86,7 @@ class TelegramDaemon:
         app.add_handler(CommandHandler("chat", self._on_chat))
         app.add_handler(CommandHandler("abort", self._on_abort))
         app.add_handler(CommandHandler("report", self._on_report))
+        app.add_handler(CommandHandler("new", self._on_new))
 
         # 普通消息处理（用于直接回复路由）
         app.add_handler(MessageHandler(
@@ -140,7 +144,9 @@ class TelegramDaemon:
             "/ask <id> <消息> - 发送反馈\n"
             "/chat <id> <问题> - 与 Agent 对话\n"
             "/abort <id> - 终止任务\n"
-            "/report <id> - 查看报告"
+            "/report <id> - 查看报告\n"
+            "/new - 重置聊天上下文\n"
+            "直接发消息 - 自由聊天"
         )
 
     async def _on_help(self, update, context):
@@ -164,15 +170,12 @@ class TelegramDaemon:
         working_dir = args[0]
         requirement = " ".join(args[1:])
 
-        # 验证目录
-        real_dir = os.path.realpath(os.path.expanduser(working_dir))
+        # 验证目录：展开 ~ 和环境变量（如 $HOME）
+        real_dir = os.path.realpath(
+            os.path.expanduser(os.path.expandvars(working_dir))
+        )
         if not os.path.isdir(real_dir):
             await update.message.reply_text(f"目录不存在: {real_dir}")
-            return
-
-        home = os.path.expanduser("~")
-        if not real_dir.startswith(home):
-            await update.message.reply_text(f"目录必须在 $HOME 下: {real_dir}")
             return
 
         # 并发检查
@@ -382,31 +385,62 @@ class TelegramDaemon:
             report = report[:4000] + "\n...(已截断)"
         await update.message.reply_text(report)
 
+    async def _on_new(self, update, context):
+        """处理 /new 命令：重置自由聊天上下文"""
+        if not self._check_auth(update.effective_chat.id):
+            await update.message.reply_text("未授权")
+            return
+        self._free_chat_history = []
+        await update.message.reply_text("对话已重置")
+
     async def _on_message(self, update, context):
-        """处理普通消息（用于直接回复路由）"""
+        """处理普通消息：回复任务通知 → inbox 路由，其他 → 自由聊天"""
         if not self._check_auth(update.effective_chat.id):
             return
 
-        # 检查是否为回复消息
+        # 优先检查：回复任务通知消息 → inbox 路由
         reply_to = update.message.reply_to_message
-        if not reply_to:
-            return
+        if reply_to:
+            task_id = self._message_task_map.get(reply_to.message_id)
+            if task_id:
+                inbox_path = (
+                    Path("~/.maestro/sessions").expanduser()
+                    / task_id / "inbox.txt"
+                )
+                if inbox_path.parent.exists():
+                    _write_inbox(str(inbox_path), "telegram-reply", update.message.text)
+                    await update.message.reply_text(
+                        f"已转发到任务 [{task_id}]"
+                    )
+                return
 
-        # 查找对应的 task_id
-        task_id = self._message_task_map.get(reply_to.message_id)
-        if not task_id:
-            return
+        # 其他所有消息 → 自由聊天
+        await self._handle_free_chat(update)
 
-        # 路由到 inbox
-        inbox_path = (
-            Path("~/.maestro/sessions").expanduser()
-            / task_id / "inbox.txt"
-        )
-        if inbox_path.parent.exists():
-            _write_inbox(str(inbox_path), "telegram-reply", update.message.text)
-            await update.message.reply_text(
-                f"已转发到任务 [{task_id}]"
-            )
+    async def _handle_free_chat(self, update):
+        """处理自由聊天消息"""
+        user_text = update.message.text
+
+        # 发送 typing 状态提示
+        await update.message.chat.send_action("typing")
+
+        # 调用 LLM
+        from maestro.manager_agent import ManagerAgent
+        manager = ManagerAgent(self.config.manager)
+        reply = manager.free_chat(self._free_chat_history, user_text)
+
+        # 更新历史
+        self._free_chat_history.append({"role": "user", "content": user_text})
+        self._free_chat_history.append({"role": "assistant", "content": reply})
+
+        # 保留最近 20 条消息（10 轮对话）
+        if len(self._free_chat_history) > 20:
+            self._free_chat_history = self._free_chat_history[-20:]
+
+        # 发送回复（处理 Telegram 4096 字符限制）
+        if len(reply) > 4000:
+            reply = reply[:4000] + "\n...(已截断)"
+        await update.message.reply_text(reply)
 
     # ============================================================
     # state 监控
@@ -523,6 +557,7 @@ class TelegramDaemon:
         cmd = [
             sys.executable, "-m", "maestro.cli",
             "_worker", task_id, working_dir, requirement,
+            "-c", self._config_path,
         ]
 
         import shutil
@@ -580,7 +615,7 @@ def main():
         ]
     )
 
-    daemon = TelegramDaemon(config)
+    daemon = TelegramDaemon(config, config_path=args.config)
     asyncio.run(daemon.start())
 
 

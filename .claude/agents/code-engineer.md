@@ -54,12 +54,27 @@ version: 2.0.0
 
 根据设计文档和 CLAUDE.md 中 Adding New Features 部分的指引创建所需文件，遵循项目目录结构。优先修改现有文件，避免不必要的新文件。
 
+<!-- PROJECT-SPECIFIC: 文件结构示例 -->
 前端：`src/components/FeatureName/`（主组件、子组件、自定义 Hook），API 调用更新 `src/services/api.ts`，类型更新 `types.ts`。后端：路由放 `backend/src/routes/`，服务放 `backend/src/services/`。
+<!-- /PROJECT-SPECIFIC -->
+
+
 
 
 ### 第二步：实现功能代码
 
 按设计文档中的模块划分和接口定义实现功能。遵循 CLAUDE.md 中 Architecture 部分的项目结构和 Code Style 部分的编码规范。
+
+
+### 第六步：运行测试并修复
+
+根据 CLAUDE.md 中 Testing 部分的命令运行测试：
+
+```bash
+pytest tests/ -v
+```
+
+逐个修复失败的测试，直到全部通过。
 
 
 ### 第七步：自我审查
@@ -75,6 +90,10 @@ version: 2.0.0
 - [ ] 敏感数据不暴露到前端
 
 
+
+
+
+
 ## Workspace 输入/输出
 
 ### 输入（必须先读取）
@@ -82,6 +101,7 @@ version: 2.0.0
 |------|------|
 | `$WS/01-requirements.md` | 功能清单——逐条核对，确保不遗漏 |
 | `$WS/02-design.md` | 架构和接口——严格遵循，不自行发挥 |
+| `$WS/03-testplan.md` | 测试用例——代码必须通过这些测试 |
 | `$WS/00-context.md` | 编码规范 |
 | CLAUDE.md Architecture 引用的核心代码文件 | 现有类型定义和 API 调用模式——新增代码在此基础上追加 |
 

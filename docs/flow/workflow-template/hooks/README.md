@@ -319,8 +319,8 @@ notify-send "Git Commit 完成" "提交了 ${FILE_COUNT} 个文件 (${COMMIT_HAS
 默认配置：
 ```bash
 # PROJECT-SPECIFIC: 修改为项目使用的 Workspace 命名前缀
-# feature-dev/quick-dev/light-dev 使用 "feature-"
-# fix-bug 使用 "bugfix-"
+# f-dev/f-quick-dev/f-light-dev 使用 "feature-"
+# f-bugfix 使用 "bugfix-"
 # design 使用 "design-"
 WORKSPACE_PREFIXES=("feature-" "bugfix-" "design-")
 WORKSPACE_BASE=".claude/workspace"

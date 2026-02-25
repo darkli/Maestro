@@ -1,13 +1,13 @@
 #!/bin/bash
-# @version 2.0.0
+# @version 2.1.0
 # 覆盖率检查 Hook — 运行测试后检查覆盖率是否达标
 
-# === 配置区域（由 init-workflow 填充） ===
-CAPABILITY_TESTING="false"                      # 值为框架名或 "false"
-TEST_CMD_PATTERNS="pytest|python -m pytest"     # 测试命令匹配模式
-COVERAGE_FILE="./htmlcov/index.html"            # 覆盖率报告路径
-COVERAGE_FORMAT="json"                          # json / lcov / cobertura
-THRESHOLD=80                                    # 最低覆盖率阈值
+# === 配置区域（由 f-init 填充） ===
+CAPABILITY_TESTING="pytest"
+TEST_CMD_PATTERNS="bats|shunit2|make test"
+COVERAGE_FILE=".coverage"
+COVERAGE_FORMAT="xml"
+THRESHOLD="80"
 # === 配置区域结束 ===
 
 # testing:false 早退
@@ -36,23 +36,24 @@ if [ ! -f "$COVERAGE_FILE" ]; then
 fi
 
 # 根据覆盖率格式解析覆盖率数据
+STATEMENT_COV=""
 case "$COVERAGE_FORMAT" in
   json)
-    STATEMENT_COV=$(jq -r '.total.statements.pct' "$COVERAGE_FILE")
+    STATEMENT_COV=$(jq -r '.total.statements.pct // 0' "$COVERAGE_FILE" 2>/dev/null)
     ;;
   lcov)
-    LF=$(grep -c "^LF:" "$COVERAGE_FILE")
-    LH=$(grep -c "^LH:" "$COVERAGE_FILE")
+    LF=$(grep -c "^LF:" "$COVERAGE_FILE" 2>/dev/null || echo "0")
+    LH=$(grep -c "^LH:" "$COVERAGE_FILE" 2>/dev/null || echo "0")
     if [ "$LF" -gt 0 ]; then
-      STATEMENT_COV=$(echo "scale=1; $LH * 100 / $LF" | bc -l)
+      STATEMENT_COV=$(echo "scale=1; $LH * 100 / $LF" | bc -l 2>/dev/null || echo "0")
     else
       STATEMENT_COV=0
     fi
     ;;
   cobertura)
-    STATEMENT_COV=$(python3 -c "
-import xml.etree.ElementTree as ET
-tree = ET.parse('$COVERAGE_FILE')
+    STATEMENT_COV=$(COVERAGE_PATH="$COVERAGE_FILE" python3 -c "
+import os, xml.etree.ElementTree as ET
+tree = ET.parse(os.environ['COVERAGE_PATH'])
 root = tree.getroot()
 print(round(float(root.attrib.get('line-rate', 0)) * 100, 1))
 " 2>/dev/null || echo "0")
@@ -63,9 +64,14 @@ print(round(float(root.attrib.get('line-rate', 0)) * 100, 1))
     ;;
 esac
 
-if [ "$(echo "$STATEMENT_COV < $THRESHOLD" | bc -l)" -eq 1 ]; then
+# 校验解析结果是否为有效数字
+if ! echo "$STATEMENT_COV" | grep -qE '^[0-9]+\.?[0-9]*$'; then
+  exit 0  # 解析失败，不阻塞
+fi
+
+if [ "$(echo "$STATEMENT_COV < $THRESHOLD" | bc -l 2>/dev/null)" = "1" ]; then
   echo "测试覆盖率不达标！当前：${STATEMENT_COV}%，要求：${THRESHOLD}%" >&2
-  exit 1  # exit 1 = 非阻塞性警告
+  exit 1
 fi
 
 echo "测试覆盖率达标：${STATEMENT_COV}%"

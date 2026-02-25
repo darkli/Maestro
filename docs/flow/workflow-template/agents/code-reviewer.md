@@ -198,19 +198,12 @@ APPROVE / REQUEST CHANGES / APPROVE WITH COMMENTS
 
 > 根据 Capabilities 中 `frontend` 标签值执行对应框架的检查。
 
-<!-- PROJECT-SPECIFIC: React 项目示例 -->
-检查（React）：
-- useEffect 依赖数组是否正确
-- useEffect 是否有清理函数（定时器、订阅、WebSocket）
-- 是否有不必要的 state（可以计算的值不应存为 state）
-- 组件是否过大（超过 300 行应拆分）
-- 事件处理器是否正确绑定
-<!-- /PROJECT-SPECIFIC -->
-
-通用检查：
+根据 CLAUDE.md Capabilities 中 `frontend` 标签值，检查对应框架的最佳实践：
 - 组件/模块是否过大（超过 300 行应考虑拆分）
-- 状态管理是否合理
-- 副作用是否正确清理
+- 状态管理是否合理（避免不必要的 state、避免 prop drilling）
+- 副作用是否正确清理（定时器、订阅、WebSocket 连接）
+- Hook/生命周期依赖是否完整
+- 事件处理器是否正确绑定
 <!-- ENDIF:frontend -->
 
 ### 第四步：设计一致性审查

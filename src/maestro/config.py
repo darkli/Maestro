@@ -66,6 +66,9 @@ class ManagerConfig:
     retry_count: int = 3
     system_prompt: str = ""
 
+    # ---- 网络配置 ----
+    ip_version: int = 0              # IP 协议版本: 4 = 强制 IPv4, 6 = 强制 IPv6, 0 = 系统默认
+
     # ---- Prompt 外置化配置 ----
     system_prompt_file: str = ""     # system prompt 文件路径（优先于 system_prompt）
     chat_prompt_file: str = ""       # standalone_chat prompt 文件路径
