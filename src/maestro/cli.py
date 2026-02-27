@@ -252,18 +252,31 @@ def _handle_list(args):
 
     # 状态图标
     status_icons = {
-        "pending": "...",
-        "executing": ">>>",
-        "waiting_user": "???",
-        "completed": "[OK]",
-        "failed": "[!!]",
-        "aborted": "[XX]",
+        "pending":      "[..]",
+        "executing":    "[>>]",
+        "waiting_user": "[??]",
+        "completed":    "[OK]",
+        "failed":       "[!!]",
+        "aborted":      "[XX]",
+    }
+
+    # failed 细分图标
+    fail_reason_icons = {
+        "ask_user_timeout":  "[TO]",   # Timeout
+        "max_turns":         "[MT]",   # Max Turns
+        "breaker_tripped":   "[CB]",   # Circuit Breaker
+        "blocked":           "[BK]",   # Blocked
+        "worker_crashed":    "[CR]",   # Crashed
+        "runtime_error":     "[ER]",   # Error
     }
 
     print(f"{'ID':>10}  {'状态':<12}  {'需求':<40}  {'创建时间':<20}")
     print("-" * 90)
     for t in tasks:
-        icon = status_icons.get(t.get("status", ""), "   ")
+        status = t.get("status", "")
+        icon = status_icons.get(status, "    ")
+        if status == "failed":
+            icon = fail_reason_icons.get(t.get("fail_reason", ""), icon)
         req = t.get("requirement", "")[:38]
         created = t.get("created_at", "")[:19]
         print(f"{t['task_id']:>10}  {icon} {t.get('status', ''):9}  {req:<40}  {created}")
@@ -362,20 +375,31 @@ def _handle_abort(args):
     session_dir = (
         Path("~/.maestro/sessions").expanduser() / args.task_id
     )
-    if not session_dir.exists():
+
+    # 检查 registry 和 session 目录
+    registry = TaskRegistry()
+    tasks = registry.list_tasks()
+    task_exists = any(t.get("task_id") == args.task_id for t in tasks)
+
+    if not task_exists and not session_dir.exists():
         print(f"任务 {args.task_id} 不存在")
         return
 
-    # 创建 abort 信号文件
-    abort_file = session_dir / "abort"
-    abort_file.touch()
+    # 如果 session 目录存在，创建 abort 信号文件通知 worker
+    if session_dir.exists():
+        abort_file = session_dir / "abort"
+        abort_file.touch()
 
-    # 同时更新 registry
-    registry = TaskRegistry()
+        # 同时更新 state.json，防止 monitor 在 worker 处理前误判为 worker_crashed
+        from maestro.state import atomic_write_json
+        state = read_json_safe(str(session_dir / "state.json"))
+        if state:
+            state["status"] = "aborted"
+            atomic_write_json(str(session_dir / "state.json"), state)
+
     registry.update_task(args.task_id, status="aborted")
 
-    print(f"已发送终止信号到任务 [{args.task_id}]")
-    print("任务将在当前轮次结束后停止")
+    print(f"已终止任务 [{args.task_id}]")
 
 
 def _handle_resume(args):

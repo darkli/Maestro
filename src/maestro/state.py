@@ -32,6 +32,16 @@ class TaskStatus(str, Enum):
     ABORTED = "aborted"              # 用户手动终止
 
 
+class FailReason(str, Enum):
+    """失败原因分类（用于展示层差异化）"""
+    ASK_USER_TIMEOUT = "ask_user_timeout"
+    MAX_TURNS = "max_turns"
+    BREAKER_TRIPPED = "breaker_tripped"
+    BLOCKED = "blocked"
+    WORKER_CRASHED = "worker_crashed"
+    RUNTIME_ERROR = "runtime_error"
+
+
 # 合法状态转换
 VALID_TRANSITIONS: dict[str, list[str]] = {
     "pending":      ["executing"],

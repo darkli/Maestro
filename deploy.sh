@@ -30,26 +30,35 @@ case "${1:-}" in
         echo "用法: deploy.sh [命令] [deploy.env 路径]"
         echo ""
         echo "命令:"
-        echo "  init     首次部署（完整安装）"
-        echo "  update   业务逻辑更新（代码+包+配置）"
-        echo "  help     显示此帮助信息"
+        echo "  init               首次部署（完整安装）"
+        echo "  update             业务逻辑更新（代码+包+配置）"
+        echo "  service start      启动 Daemon 服务"
+        echo "  service stop       停止 Daemon 服务"
+        echo "  service restart    重启 Daemon 服务"
+        echo "  help               显示此帮助信息"
         echo ""
         echo "无命令时进入交互菜单。"
         echo ""
         echo "deploy.env 路径默认为当前目录的 deploy.env"
         exit 0
         ;;
-    init|update)
+    init|update|service)
         SUBCOMMAND="$1"
-        ENV_FILE="${2:-deploy.env}"
+        SUBCOMMAND_ARG="${2:-}"
+        ENV_FILE="${3:-deploy.env}"
+        # service 子命令的 env 也可能在第二个位置
+        if [[ "$SUBCOMMAND" != "service" ]]; then
+            ENV_FILE="${2:-deploy.env}"
+        fi
         ;;
     *)
         SUBCOMMAND=""
+        SUBCOMMAND_ARG=""
         if [[ -n "${1:-}" && -f "${1:-}" ]]; then
             ENV_FILE="$1"
         elif [[ -n "${1:-}" ]]; then
             err "未知命令: $1"
-            echo "用法: deploy.sh [init|update|help] [deploy.env 路径]"
+            echo "用法: deploy.sh [init|update|service <start|stop|restart>|help] [deploy.env 路径]"
             exit 1
         else
             ENV_FILE="${1:-deploy.env}"
@@ -310,7 +319,6 @@ if [[ ! -f "$STATE_FILE" ]]; then
         echo "# 清理时只删除由 deploy.sh 安装的组件"
         command -v node &>/dev/null && echo "HAD_NODEJS=true" || echo "HAD_NODEJS=false"
         command -v claude &>/dev/null && echo "HAD_CLAUDE=true" || echo "HAD_CLAUDE=false"
-        (command -v zellij &>/dev/null || [[ -x "$HOME/.local/bin/zellij" ]]) && echo "HAD_ZELLIJ=true" || echo "HAD_ZELLIJ=false"
     } > "$STATE_FILE"
     ok "环境快照已记录: $STATE_FILE"
 else
@@ -366,24 +374,6 @@ else
     info "安装 Claude Code ..."
     $SUDO npm install -g @anthropic-ai/claude-code
     ok "Claude Code 安装完成"
-fi
-
-# ---- Zellij ----
-if command -v zellij &>/dev/null || [[ -x "$HOME/.local/bin/zellij" ]]; then
-    ok "Zellij 已安装"
-else
-    info "安装 Zellij v0.41.2 ..."
-    ZELLIJ_DIR="/usr/local/bin"
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64)  ZELLIJ_ARCH="x86_64" ;;
-        aarch64) ZELLIJ_ARCH="aarch64" ;;
-        *)       die "不支持的架构: $ARCH" ;;
-    esac
-    curl -fsSL "https://github.com/zellij-org/zellij/releases/download/v0.41.2/zellij-${ZELLIJ_ARCH}-unknown-linux-musl.tar.gz" \
-        | tar xz -C "$ZELLIJ_DIR"
-    chmod +x "$ZELLIJ_DIR/zellij"
-    ok "Zellij 安装完成"
 fi
 
 # ---- Python venv + pip install ----
@@ -449,12 +439,11 @@ telegram:
   enabled: $TG_ENABLED
   bot_token: "$TELEGRAM_BOT_TOKEN"
   chat_id: "$TELEGRAM_CHAT_ID"
-  push_every_turn: true
   ask_user_timeout: 3600
 
 zellij:
-  enabled: true
-  auto_install: true
+  enabled: false
+  auto_install: false
 
 logging:
   dir: ~/.maestro/logs
@@ -600,12 +589,11 @@ telegram:
   enabled: $TG_ENABLED
   bot_token: \"$TELEGRAM_BOT_TOKEN\"
   chat_id: \"$TELEGRAM_CHAT_ID\"
-  push_every_turn: true
   ask_user_timeout: 3600
 
 zellij:
-  enabled: true
-  auto_install: true
+  enabled: false
+  auto_install: false
 
 logging:
   dir: ~/.maestro/logs
@@ -933,7 +921,6 @@ do_status() {
         echo -n 'Python: '; python3 --version 2>&1 | awk '{print \$2}' || echo '未安装'
         echo -n 'Node.js: '; node --version 2>/dev/null || echo '未安装'
         echo -n 'Claude Code: '; claude --version 2>/dev/null || echo '未安装'
-        echo -n 'Zellij: '; (zellij --version 2>/dev/null || \$HOME/.local/bin/zellij --version 2>/dev/null) || echo '未安装'
 
         echo ''
         echo '=== Maestro ==='
@@ -1015,7 +1002,7 @@ do_clean() {
     echo ""
     # 读取环境快照（如有）判断哪些工具是部署脚本安装的
     PRE_STATE=$(run_ssh "cat ${DEPLOY_DIR}/.pre-deploy-state 2>/dev/null" || true)
-    HAD_NODEJS=true; HAD_CLAUDE=true; HAD_ZELLIJ=true
+    HAD_NODEJS=true; HAD_CLAUDE=true
     if [[ -n "$PRE_STATE" ]]; then
         eval "$(echo "$PRE_STATE" | grep -E '^HAD_')"
     fi
@@ -1027,14 +1014,12 @@ do_clean() {
     echo "    4. 删除 Maestro 日志（~/.maestro）"
     echo "    5. 删除 Claude Code 认证（~/.claude）"
     [[ "$HAD_CLAUDE" == "false" ]] && echo "    6. 卸载 Claude Code（部署时安装）"
-    [[ "$HAD_ZELLIJ" == "false" ]] && echo "    7. 删除 Zellij（部署时安装）"
-    [[ "$HAD_NODEJS" == "false" ]] && echo "    8. 卸载 Node.js（部署时安装）"
+    [[ "$HAD_NODEJS" == "false" ]] && echo "    7. 卸载 Node.js（部署时安装）"
     echo ""
     echo "  以下内容保留（部署前已存在）："
     KEEP_LIST=""
     [[ "$HAD_NODEJS" == "true" ]] && KEEP_LIST="${KEEP_LIST}Node.js、"
     [[ "$HAD_CLAUDE" == "true" ]] && KEEP_LIST="${KEEP_LIST}Claude Code、"
-    [[ "$HAD_ZELLIJ" == "true" ]] && KEEP_LIST="${KEEP_LIST}Zellij、"
     KEEP_LIST="${KEEP_LIST}Python（系统级）"
     echo "    - ${KEEP_LIST}"
     echo ""
@@ -1108,18 +1093,6 @@ else
     echo "[清理] Claude Code 保留（部署前已存在）"
 fi
 
-if [[ "$HAD_ZELLIJ" == "false" ]]; then
-    if [[ -x "$HOME/.local/bin/zellij" ]]; then
-        rm -f "$HOME/.local/bin/zellij"
-        echo "[清理] Zellij 已删除（部署时安装）"
-    elif command -v zellij &>/dev/null; then
-        $SUDO rm -f "$(command -v zellij)" 2>/dev/null || true
-        echo "[清理] Zellij 已删除（部署时安装）"
-    fi
-else
-    echo "[清理] Zellij 保留（部署前已存在）"
-fi
-
 if [[ "$HAD_NODEJS" == "false" ]]; then
     $SUDO apt-get remove -y -qq nodejs 2>/dev/null || true
     echo "[清理] Node.js 已卸载（部署时安装）"
@@ -1135,7 +1108,6 @@ CLEAN_EOF
     echo "DEPLOY_DIR='${DEPLOY_DIR}'
 HAD_NODEJS='${HAD_NODEJS}'
 HAD_CLAUDE='${HAD_CLAUDE}'
-HAD_ZELLIJ='${HAD_ZELLIJ}'
 ${CLEAN_SCRIPT}" | run_ssh_pipe bash
 
     echo ""
@@ -1149,7 +1121,47 @@ ${CLEAN_SCRIPT}" | run_ssh_pipe bash
 }
 
 # ============================================================
-# 交互菜单（5 项）
+# do_service() — 远程服务管理
+# ============================================================
+do_service() {
+    local action="${1:-}"
+    if [[ -z "$action" ]]; then
+        echo ""
+        echo "  a) 启动服务"
+        echo "  b) 停止服务"
+        echo "  c) 重启服务"
+        echo "  0) 返回"
+        echo ""
+        read -r -p "  请选择 [a/b/c/0]: " SVC_CHOICE
+        case "${SVC_CHOICE:-}" in
+            a) action="start" ;;
+            b) action="stop" ;;
+            c) action="restart" ;;
+            0|*) return ;;
+        esac
+    fi
+
+    case "$action" in
+        start)
+            info "启动 Daemon 服务 ..."
+            run_ssh "sudo systemctl start maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
+            ok "启动命令已发送"
+            ;;
+        stop)
+            info "停止 Daemon 服务 ..."
+            run_ssh "sudo systemctl stop maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
+            ok "停止命令已发送"
+            ;;
+        restart)
+            info "重启 Daemon 服务 ..."
+            run_ssh "sudo systemctl restart maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
+            ok "重启命令已发送"
+            ;;
+    esac
+}
+
+# ============================================================
+# 交互菜单（6 项）
 # ============================================================
 show_menu() {
     echo ""
@@ -1162,7 +1174,8 @@ show_menu() {
     echo "  1) 首次部署（完整安装）"
     echo "  2) 业务逻辑更新（代码+包+配置）"
     echo "  3) 查看状态"
-    echo "  4) 清理卸载"
+    echo "  4) 服务管理（启动/停止/重启）"
+    echo "  5) 清理卸载"
     echo "  0) 退出"
     echo ""
 }
@@ -1177,16 +1190,24 @@ case "$SUBCOMMAND" in
     update)
         do_update
         ;;
+    service)
+        if [[ -z "$SUBCOMMAND_ARG" || ! "$SUBCOMMAND_ARG" =~ ^(start|stop|restart)$ ]]; then
+            echo "用法: deploy.sh service <start|stop|restart>"
+            exit 1
+        fi
+        do_service "$SUBCOMMAND_ARG"
+        ;;
     "")
         # 无子命令 → 进入交互菜单
         while true; do
             show_menu
-            read -r -p "  请选择 [0-4]: " MENU_CHOICE
+            read -r -p "  请选择 [0-5]: " MENU_CHOICE
             case "$MENU_CHOICE" in
                 1) do_init ;;
                 2) do_update ;;
                 3) do_status ;;
-                4) do_clean ;;
+                4) do_service ;;
+                5) do_clean ;;
                 0) echo ""; ok "再见！"; exit 0 ;;
                 *) warn "无效选择: $MENU_CHOICE" ;;
             esac

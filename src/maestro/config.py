@@ -106,7 +106,6 @@ class TelegramConfig:
     enabled: bool = False
     bot_token: str = ""
     chat_id: str = ""                 # 授权用户 chat_id
-    push_every_turn: bool = True      # 每轮推送进度
     ask_user_timeout: int = 3600      # ASK_USER 等待超时（秒）
 
 

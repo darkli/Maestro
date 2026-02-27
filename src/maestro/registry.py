@@ -109,7 +109,11 @@ class TaskRegistry:
         state_path = self.maestro_dir / "sessions" / task_id / "state.json"
         state = read_json_safe(str(state_path))
         if state:
-            self.update_task(task_id, status=state.get("status", "unknown"))
+            self.update_task(
+                task_id,
+                status=state.get("status", "unknown"),
+                fail_reason=state.get("fail_reason", ""),
+            )
 
     def rebuild(self):
         """

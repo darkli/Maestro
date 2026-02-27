@@ -24,7 +24,7 @@ from typing import Optional
 
 from maestro.config import AppConfig, load_config
 from maestro.state import (
-    TaskStatus, CircuitBreaker, atomic_write_json, read_json_safe,
+    TaskStatus, FailReason, CircuitBreaker, atomic_write_json, read_json_safe,
 )
 from maestro.context import ContextManager
 from maestro.tool_runner import ToolRunner
@@ -179,7 +179,8 @@ class Orchestrator:
             self._update_state(TaskStatus.ABORTED)
         except Exception as e:
             logger.error(f"运行出错: {e}", exc_info=True)
-            self._update_state(TaskStatus.FAILED, error_message=str(e))
+            self._update_state(TaskStatus.FAILED, error_message=str(e),
+                               fail_reason=FailReason.RUNTIME_ERROR)
         finally:
             self._print_summary()
 
@@ -217,12 +218,29 @@ class Orchestrator:
         # 4. 更新状态
         self._update_state(TaskStatus.EXECUTING, worker_pid=os.getpid())
 
-        # 5. 让 Manager 基于恢复上下文决定下一步
-        resume_notice = (
-            f"[系统通知] 任务从第 {checkpoint['current_turn']} 轮崩溃恢复。"
-            f"上一条指令是：{checkpoint.get('last_instruction', '未知')}。"
-            f"请决定下一步操作。"
-        )
+        # 5. 检查是否有用户待处理消息（自动恢复场景下用户的回复）
+        pending_messages = _read_and_clear_inbox(self.inbox_path)
+        user_reply = ""
+        if pending_messages:
+            user_reply = "\n".join(
+                _parse_inbox_message(m) for m in pending_messages
+            )
+            self._log_event(f"恢复时发现用户消息: {user_reply[:100]}")
+
+        # 6. 让 Manager 基于恢复上下文决定下一步
+        if user_reply:
+            resume_notice = (
+                f"[系统通知] 任务从第 {checkpoint['current_turn']} 轮恢复。"
+                f"上一条指令是：{checkpoint.get('last_instruction', '未知')}。\n"
+                f"用户回复了：{user_reply}\n"
+                f"请基于用户的回复决定下一步操作。"
+            )
+        else:
+            resume_notice = (
+                f"[系统通知] 任务从第 {checkpoint['current_turn']} 轮崩溃恢复。"
+                f"上一条指令是：{checkpoint.get('last_instruction', '未知')}。"
+                f"请决定下一步操作。"
+            )
         decision = self.manager.decide(resume_notice)
         instruction = decision.get("instruction", "")
 
@@ -230,7 +248,7 @@ class Orchestrator:
             self._handle_non_execute(decision, checkpoint['current_turn'])
             return
 
-        # 6. 继续主循环
+        # 7. 继续主循环
         self._main_loop(
             start_turn=checkpoint['current_turn'] + 1,
             first_instruction=instruction,
@@ -249,7 +267,6 @@ class Orchestrator:
             if self._check_abort():
                 self._update_state(TaskStatus.ABORTED)
                 self._log_event(f"任务已终止")
-                self._telegram_push(f"[{self.task_id}] 已终止")
                 return
 
             self._last_instruction = instruction
@@ -281,10 +298,6 @@ class Orchestrator:
                 last_output_summary=result.output[-500:],
             )
 
-            # (e) 通知
-            total_cost = self.breaker.total_cost + self.manager.total_cost
-            self._telegram_push_turn(turn, result.cost_usd, total_cost, result.duration_ms)
-
             # (f) 读取 inbox（在 Manager 决策前，而非编码工具执行前）
             user_messages = _read_and_clear_inbox(self.inbox_path)
             user_feedback = ""
@@ -314,6 +327,9 @@ class Orchestrator:
                 f"Manager 决策: {parsed['action']} | "
                 f"{parsed.get('reasoning', '')[:80]}"
             )
+
+            # (h2) 写入轮次事件文件（供 Daemon 读取推送）
+            self._write_turn_event(turn, result, parsed)
 
             # (i) 路由 action
             action = parsed.get("action", "execute")
@@ -365,21 +381,15 @@ class Orchestrator:
         logger.info(f"任务完成！共 {turn} 轮")
         self._update_state(TaskStatus.COMPLETED)
         self._log_event(f"任务完成: {summary}")
-        self._telegram_push(
-            f"[{self.task_id}] 任务完成！\n"
-            f"轮数: {turn}\n"
-            f"总费用: ${self.breaker.total_cost + self.manager.total_cost:.2f}\n"
-            f"摘要: {summary[:200]}"
-        )
         self._generate_report(turn, summary)
 
     def _handle_blocked(self, parsed: dict):
         """处理任务阻塞"""
         reason = parsed.get("reasoning", "未知原因")
         logger.warning(f"任务阻塞: {reason}")
-        self._update_state(TaskStatus.FAILED, error_message=f"阻塞: {reason}")
+        self._update_state(TaskStatus.FAILED, error_message=f"阻塞: {reason}",
+                           fail_reason=FailReason.BLOCKED)
         self._log_event(f"任务阻塞: {reason}")
-        self._telegram_push(f"[{self.task_id}] 任务阻塞: {reason[:200]}")
 
     def _handle_ask_user(self, parsed: dict) -> Optional[str]:
         """
@@ -390,10 +400,6 @@ class Orchestrator:
         question = parsed.get("question", parsed.get("reasoning", "需要你的决定"))
         self._update_state(TaskStatus.WAITING_USER)
         self._log_event(f"等待用户回复: {question}")
-        self._telegram_push(
-            f"[{self.task_id}] 需要你的回复:\n{question}\n\n"
-            f"请用 /ask {self.task_id} <你的回复> 回复"
-        )
         return self._wait_for_user_reply()
 
     def _handle_breaker(self, reason: str, turn: int):
@@ -401,10 +407,6 @@ class Orchestrator:
         logger.warning(f"熔断触发: {reason}")
         # 超预算时通知用户确认（而非直接 abort）
         if "费用超限" in reason:
-            self._telegram_push(
-                f"[{self.task_id}] {reason}\n"
-                f"是否继续？回复 /ask {self.task_id} 继续 或 /abort {self.task_id}"
-            )
             self._update_state(TaskStatus.WAITING_USER,
                                error_message=reason)
             reply = self._wait_for_user_reply()
@@ -414,24 +416,24 @@ class Orchestrator:
                 self._log_event(f"用户确认继续，预算提升到 ${self.breaker.max_budget_usd}")
                 return  # 继续执行
         # 其他熔断或超预算超时
-        self._update_state(TaskStatus.FAILED, error_message=reason)
+        self._update_state(TaskStatus.FAILED, error_message=reason,
+                           fail_reason=FailReason.BREAKER_TRIPPED)
         self._log_event(f"熔断: {reason}")
-        self._telegram_push(f"[{self.task_id}] 熔断: {reason}")
 
     def _handle_max_turns(self):
         """处理超过最大轮数"""
         msg = f"超过最大轮数 {self.config.manager.max_turns}"
         logger.warning(msg)
-        self._update_state(TaskStatus.FAILED, error_message=msg)
+        self._update_state(TaskStatus.FAILED, error_message=msg,
+                           fail_reason=FailReason.MAX_TURNS)
         self._log_event(msg)
-        self._telegram_push(f"[{self.task_id}] {msg}")
 
     def _handle_timeout(self):
         """处理 ASK_USER 超时"""
         msg = "等待用户回复超时"
-        self._update_state(TaskStatus.FAILED, error_message=msg)
+        self._update_state(TaskStatus.FAILED, error_message=msg,
+                           fail_reason=FailReason.ASK_USER_TIMEOUT)
         self._log_event(msg)
-        self._telegram_push(f"[{self.task_id}] {msg}，任务已停止")
 
     # ============================================================
     # 等待用户回复
@@ -502,7 +504,7 @@ class Orchestrator:
             "tool_session_id", "last_turn_duration_ms",
             "last_instruction", "last_output_summary",
             "last_manager_action", "last_manager_reasoning",
-            "error_message",
+            "error_message", "fail_reason",
         ]:
             if key in kwargs:
                 state[key] = kwargs[key]
@@ -543,40 +545,28 @@ class Orchestrator:
         with open(log_dir / "manager.log", "a", encoding="utf-8") as f:
             f.write(log_line + "\n")
 
-    def _telegram_push(self, message: str):
-        """推送 Telegram 通知（最简实现）"""
-        if not self.config.telegram.enabled:
-            return
-        if not self.config.telegram.bot_token or not self.config.telegram.chat_id:
-            return
+    # ============================================================
+    # 轮次事件写入（供 Daemon 读取推送）
+    # ============================================================
 
-        try:
-            import urllib.request
-            import urllib.parse
-            url = (
-                f"https://api.telegram.org/bot{self.config.telegram.bot_token}"
-                f"/sendMessage"
-            )
-            data = urllib.parse.urlencode({
-                "chat_id": self.config.telegram.chat_id,
-                "text": message,
-                "parse_mode": "Markdown",
-            }).encode()
-            req = urllib.request.Request(url, data=data, method="POST")
-            urllib.request.urlopen(req, timeout=10)
-        except Exception as e:
-            logger.warning(f"Telegram 推送失败: {e}")
-
-    def _telegram_push_turn(self, turn: int, turn_cost: float,
-                            total_cost: float, duration_ms: int):
-        """推送每轮进度通知"""
-        if not self.config.telegram.push_every_turn:
-            return
-        self._telegram_push(
-            f"[{self.task_id}] Turn {turn}/{self.config.manager.max_turns}\n"
-            f"本轮: ${turn_cost:.4f} | {duration_ms}ms\n"
-            f"累计: ${total_cost:.2f}"
-        )
+    def _write_turn_event(self, turn: int, result, parsed: dict):
+        """将轮次事件写入 turns.jsonl（供 Daemon 读取推送）"""
+        total_cost = self.breaker.total_cost + self.manager.total_cost
+        event = {
+            "turn": turn,
+            "max_turns": self.config.manager.max_turns,
+            "output_summary": result.output[-2000:] if result.output else "",
+            "instruction": parsed.get("instruction", "")[:200],
+            "reasoning": parsed.get("reasoning", ""),
+            "action": parsed.get("action", ""),
+            "duration_ms": result.duration_ms,
+            "turn_cost": result.cost_usd,
+            "total_cost": total_cost,
+            "timestamp": datetime.now().isoformat(),
+        }
+        turns_path = self.session_dir / "turns.jsonl"
+        with open(turns_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     # ============================================================
     # 报告生成（内联实现）

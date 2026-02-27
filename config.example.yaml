@@ -160,22 +160,19 @@ telegram:
   # 授权用户的 chat_id（从 @userinfobot 获取）
   chat_id: ${TELEGRAM_CHAT_ID}
 
-  # 每轮推送进度通知
-  push_every_turn: true
-
   # ASK_USER 等待用户回复的超时（秒）
   ask_user_timeout: 3600
 
 # ============================================================
-# Zellij 终端 UI 配置
+# Zellij 终端 UI 配置（可选）
 # 提供多面板界面：Manager 日志、编码工具输出、任务状态
-# 设为 enabled: false 可禁用
+# Telegram Daemon 模式不需要 Zellij，仅 CLI 前台调试时有用
 # ============================================================
 zellij:
-  enabled: true
+  enabled: false
 
   # Zellij 未安装时自动下载预编译二进制（仅 Linux）
-  auto_install: true
+  auto_install: false
 
 # ============================================================
 # 日志配置
