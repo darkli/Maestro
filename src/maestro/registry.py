@@ -23,7 +23,7 @@ class TaskRegistry:
     多任务注册表
 
     数据存储在 ~/.maestro/registry.json。
-    每个条目包含：task_id, requirement, working_dir, status, created_at, zellij_session。
+    每个条目包含：task_id, requirement, working_dir, status, created_at。
     """
 
     def __init__(self, maestro_dir: str = "~/.maestro",
@@ -48,7 +48,6 @@ class TaskRegistry:
             "working_dir": working_dir,
             "status": "pending",
             "created_at": datetime.now().isoformat(),
-            "zellij_session": f"maestro-{task_id}",
         }
         registry[task_id] = entry
         self._save(registry)
@@ -113,6 +112,7 @@ class TaskRegistry:
                 task_id,
                 status=state.get("status", "unknown"),
                 fail_reason=state.get("fail_reason", ""),
+                coding_tool_type=state.get("coding_tool_type", ""),
             )
 
     def rebuild(self):
@@ -138,7 +138,7 @@ class TaskRegistry:
                     "working_dir": state.get("working_dir", ""),
                     "status": state.get("status", "unknown"),
                     "created_at": state.get("created_at", ""),
-                    "zellij_session": state.get("zellij_session", ""),
+                    "coding_tool_type": state.get("coding_tool_type", ""),
                 }
         self._save(registry)
 

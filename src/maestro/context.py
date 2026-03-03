@@ -44,7 +44,8 @@ class ContextManager:
         summary = self._summarize_middle(middle)
 
         return first_pair + [
-            {"role": "user", "content": f"[中间 {len(middle) // 2} 轮的摘要]\n{summary}"}
+            {"role": "user", "content": f"[中间 {len(middle) // 2} 轮的摘要]\n{summary}"},
+            {"role": "assistant", "content": "已记录历史决策摘要，继续分析当前状态。"},
         ] + recent
 
     def truncate_output(self, output: str) -> str:

@@ -52,8 +52,7 @@ extract_last_date() {
   local file="$1"
   grep '^### [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "$file" 2>/dev/null \
     | tail -1 \
-    | awk '{ match($0, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/); print substr($0, RSTART, RLENGTH) }' \
-    || true
+    | awk '{ match($0, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/); print substr($0, RSTART, RLENGTH) }'
 }
 
 # 提取最后一条完整的 ### YYYY- 会话节内容
@@ -261,12 +260,12 @@ cmd_clean() {
   [ -n "$current_transcript" ] && current_basename=$(basename "$current_transcript")
 
   # Step 4: Compute cleanable = all - referenced - current
-  # Use a temp file to hold cleanable paths (one per line, safe for paths with spaces)
-  local cleanable_tmp
-  cleanable_tmp=$(mktemp "${TMPDIR:-/tmp}/ctx-clean-XXXXXX")
+  local cleanable_list=""
+  local all_jsonl
+  all_jsonl=$(ls "$transcript_dir"/*.jsonl 2>/dev/null || true)
 
   local f
-  for f in "$transcript_dir"/*.jsonl; do
+  for f in $all_jsonl; do
     [ -f "$f" ] || continue
     local bname
     bname=$(basename "$f")
@@ -283,19 +282,26 @@ cmd_clean() {
     fi
     [ "$is_ref" = true ] && continue
 
-    echo "$f" >> "$cleanable_tmp"
+    # Append to cleanable (space-separated paths)
+    if [ -z "$cleanable_list" ]; then
+      cleanable_list="$f"
+    else
+      cleanable_list="$cleanable_list $f"
+    fi
   done
 
   # Compute total size of cleanable files
   local total_size="0"
-  if [ -s "$cleanable_tmp" ]; then
-    total_size=$(xargs du -ch < "$cleanable_tmp" 2>/dev/null | tail -1 | awk '{print $1}' || echo "unknown")
+  if [ -n "$cleanable_list" ]; then
+    total_size=$(du -sh $cleanable_list 2>/dev/null | awk '{s=$1} END{print s+0 "K"}' || echo "unknown")
+    # More portable total size: count bytes
+    total_size=$(du -ch $cleanable_list 2>/dev/null | tail -1 | awk '{print $1}' || echo "unknown")
   fi
 
   # Build JSON array of cleanable basenames
   local json_array="["
   local first=true
-  while IFS= read -r f; do
+  for f in $cleanable_list; do
     local bname
     bname=$(basename "$f")
     if [ "$first" = true ]; then
@@ -304,18 +310,17 @@ cmd_clean() {
     else
       json_array="${json_array}, \"$bname\""
     fi
-  done < "$cleanable_tmp"
+  done
   json_array="${json_array}]"
 
   if [ "$confirm" = false ]; then
-    rm -f "$cleanable_tmp"
     output_json "{\"cleanable\": $json_array, \"referenced_count\": $referenced_count, \"current\": \"$current_basename\", \"total_size\": \"$total_size\"}"
     return 0
   fi
 
   # With --confirm: delete cleanable files and their same-name subdirs
   local deleted_count=0
-  while IFS= read -r f; do
+  for f in $cleanable_list; do
     [ -f "$f" ] || continue
     local subdir="${f%.jsonl}"
     rm -f "$f"
@@ -323,8 +328,7 @@ cmd_clean() {
     if [ -d "$subdir" ]; then
       rm -rf "$subdir"
     fi
-  done < "$cleanable_tmp"
-  rm -f "$cleanable_tmp"
+  done
 
   output_json "{\"deleted_count\": $deleted_count, \"cleanable\": $json_array, \"total_size\": \"$total_size\"}"
 }

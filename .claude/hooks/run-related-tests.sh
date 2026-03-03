@@ -1,6 +1,10 @@
 #!/bin/bash
-# @version 2.1.0
+# @version 2.2.0
 # 关联测试 Hook — 修改源码后自动运行相关测试
+
+# 加载公共函数库（match_patterns 等）
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/../scripts/common.sh"
 
 # === 配置区域（由 f-init 填充） ===
 CAPABILITY_TESTING="pytest"
@@ -9,20 +13,33 @@ SOURCE_PATTERNS="*.sh"
 TEST_FILE_PATTERNS="test/*.bats|tests/*.bats|test/*_test.sh|tests/*_test.sh"
 # === 配置区域结束 ===
 
-# testing:false 或 CMD 为空时早退
-if [ "$CAPABILITY_TESTING" = "false" ] || [ -z "$TEST_CMD" ]; then
+# testing:false 早退
+if [ "$CAPABILITY_TESTING" = "false" ]; then
   exit 0
 fi
 
-# 检查文件路径是否匹配管道分隔的 glob 模式
-# 支持绝对路径：对每个模式额外尝试 */ 前缀匹配
-match_patterns() {
-  local file="$1" patterns="$2"
-  IFS='|' read -ra PATS <<< "$patterns"
-  for pat in "${PATS[@]}"; do
-    case "$file" in $pat | */$pat) return 0 ;; esac
-  done
-  return 1
+# 根据测试框架和命令格式构造完整的测试执行命令
+run_test() {
+  local file_path="$1"
+  case "$CAPABILITY_TESTING" in
+    vitest|jest)
+      case "$TEST_CMD" in
+        npm\ test*|npm\ run\ test*)
+          # npm 需要 -- 分隔符传递参数给底层框架
+          $TEST_CMD -- "$file_path" --passWithNoTests
+          ;;
+        *)
+          $TEST_CMD "$file_path" --passWithNoTests
+          ;;
+      esac
+      ;;
+    pytest)
+      $TEST_CMD "$file_path"
+      ;;
+    *)
+      $TEST_CMD "$file_path"
+      ;;
+  esac
 }
 
 INPUT=$(cat)
@@ -39,7 +56,7 @@ fi
 
 # 对源码文件运行关联测试
 if match_patterns "$FILE_PATH" "$SOURCE_PATTERNS"; then
-  $TEST_CMD "$FILE_PATH" 2>/dev/null
+  run_test "$FILE_PATH"
 fi
 
 exit 0

@@ -205,4 +205,15 @@ When user says "继续做" without specifying a task:
 <!-- [必填] 提交消息的语言和格式 -->
 <!-- 将 $COMMIT_LANGUAGE 替换为项目实际语言 -->
 
-Commit messages are concise and action-oriented, in $COMMIT_LANGUAGE. Follow existing style.
+Commit messages are concise and action-oriented, in $COMMIT_LANGUAGE. Follow existing style. Note: git write operations are guarded by hooks — see Git Safety section below.
+
+## Git Safety
+
+**所有 git 写操作必须先获得用户确认**。`.claude/hooks/git-guard.sh` 会自动拦截 git 写命令（add, commit, push, reset, checkout 等），只读命令（status, log, diff, show, branch 等）不受影响。
+
+当需要执行 git 写操作时：
+1. 先向用户说明要执行的完整 git 命令及原因
+2. 等待用户明确同意
+3. 由用户手动执行该命令
+
+**禁止**：直接执行 git add、git commit、git push 等写操作，即使认为操作是安全的。

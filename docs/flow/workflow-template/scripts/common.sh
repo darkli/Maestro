@@ -111,18 +111,6 @@ count_section_headers() {
   grep -c "$pattern" "$file" 2>/dev/null || echo 0
 }
 
-# 提取 Workspace 文件中的 ## 下游摘要 节
-# 用法: extract_downstream_summary file.md
-# 返回: 下游摘要节的全部内容
-extract_downstream_summary() {
-  local file="$1"
-  [ -f "$file" ] || return 0
-  awk '
-    /^## 下游摘要/ { found = 1; next }
-    /^## / && found { exit }
-    found { print }
-  ' "$file"
-}
 
 # ============================================================
 # CLAUDE.md Capabilities 解析
@@ -167,8 +155,8 @@ get_capability() {
 get_transcript_dir() {
   local project_root="${1:-$PWD}"
   local project_hash
-  # 将 / 替换为 -，去掉开头的 -（保留 _ 以匹配 Claude Code 实际目录命名）
-  project_hash=$(echo "$project_root" | sed 's|/|-|g' | sed 's|^-||')
+  # 将 / 和 _ 都替换为 -，去掉开头的 -
+  project_hash=$(echo "$project_root" | sed 's|[/_]|-|g' | sed 's|^-||')
   echo "$HOME/.claude/projects/-${project_hash}"
 }
 
@@ -210,6 +198,40 @@ portable_du() {
   else
     echo "0"
   fi
+}
+
+# ============================================================
+# 文件模式匹配（Hook 和 Script 共用）
+# ============================================================
+
+# 检查文件路径是否匹配管道分隔的 glob 模式（支持深层路径）
+# 用法: match_patterns "src/utils/helper.ts" "src/*.ts|src/*.tsx"
+# 支持两类模式：
+#   - 纯扩展名（*.ts）：匹配任意路径下的 .ts 文件
+#   - 带目录前缀（src/*.ts）：匹配 src/ 下任意深度的 .ts 文件
+match_patterns() {
+  local file="$1" patterns="$2"
+  IFS='|' read -ra PATS <<< "$patterns"
+  for pat in "${PATS[@]}"; do
+    case "$pat" in
+      \*.*)
+        local ext="${pat#\*}"
+        case "$file" in *"$ext") return 0 ;; esac
+        ;;
+      *)
+        local dir_prefix="${pat%%/\**}"
+        local ext_suffix="${pat##*\*}"
+        if [ "$dir_prefix" != "$pat" ] && [ "$ext_suffix" != "$pat" ]; then
+          case "$file" in
+            "$dir_prefix"/*"$ext_suffix") return 0 ;;
+          esac
+        else
+          case "$file" in $pat) return 0 ;; esac
+        fi
+        ;;
+    esac
+  done
+  return 1
 }
 
 # ============================================================
@@ -292,30 +314,30 @@ detect_ws_progress() {
       [ -f "$ws_dir/03-spec.md" ] && completed=$((completed + 1))
       ;;
     doc)
-      total=5
-      [ -f "$ws_dir/01-analysis.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/02-plan.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/03-changes.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/04-consistency.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/05-review.md" ] && completed=$((completed + 1))
+      total=2
+      [ -f "$ws_dir/01-plan.md" ] && completed=$((completed + 1))
+      [ -f "$ws_dir/02-summary.md" ] && completed=$((completed + 1))
       ;;
-    *)
-      # feature, bugfix, design, etc.
-      total=7
+    design)
+      total=2
       [ -f "$ws_dir/01-requirements.md" ] && completed=$((completed + 1))
       [ -f "$ws_dir/02-design.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/03-testplan.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/04-implementation.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/05-review.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/06-validation.md" ] && completed=$((completed + 1))
-      [ -f "$ws_dir/07-delivery.md" ] && completed=$((completed + 1))
-      # design type only has 2 stages
-      if [ "$prefix" = "design" ]; then
-        total=2
-        completed=0
-        [ -f "$ws_dir/01-requirements.md" ] && completed=$((completed + 1))
-        [ -f "$ws_dir/02-design.md" ] && completed=$((completed + 1))
-      fi
+      ;;
+    feature)
+      total=3
+      [ -f "$ws_dir/01-requirements.md" ] && completed=$((completed + 1))
+      [ -f "$ws_dir/02-design.md" ] && completed=$((completed + 1))
+      [ -f "$ws_dir/03-summary.md" ] && completed=$((completed + 1))
+      ;;
+    bugfix)
+      total=2
+      [ -f "$ws_dir/01-diagnosis.md" ] && completed=$((completed + 1))
+      [ -f "$ws_dir/02-summary.md" ] && completed=$((completed + 1))
+      ;;
+    *)
+      # 未知类型，按文件数估算
+      total=$(find "$ws_dir" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+      completed=$total
       ;;
   esac
 

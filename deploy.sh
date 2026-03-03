@@ -96,10 +96,17 @@ MANAGER_PROVIDER="${MANAGER_PROVIDER:-deepseek}"
 MANAGER_MODEL="${MANAGER_MODEL:-deepseek-chat}"
 MANAGER_API_KEY="${MANAGER_API_KEY:-}"
 MANAGER_BASE_URL="${MANAGER_BASE_URL:-}"
-MANAGER_IP_VERSION="${MANAGER_IP_VERSION:-0}"
+PREFER_IPV4="${PREFER_IPV4:-true}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 SETUP_SYSTEMD="${SETUP_SYSTEMD:-true}"
+# 向后兼容：旧 CODING_TOOL_TYPE → 新 CODING_TOOLS
+if [[ -z "${CODING_TOOLS:-}" && -n "${CODING_TOOL_TYPE:-}" ]]; then
+    CODING_TOOLS="$CODING_TOOL_TYPE"
+    DEFAULT_CODING_TOOL="${CODING_TOOL_TYPE}"
+fi
+CODING_TOOLS="${CODING_TOOLS:-claude}"
+DEFAULT_CODING_TOOL="${DEFAULT_CODING_TOOL:-claude}"
 MAESTRO_RUN_USER="${MAESTRO_RUN_USER:-viber}"
 MAESTRO_RUN_PASSWORD="${MAESTRO_RUN_PASSWORD:-}"
 
@@ -108,6 +115,18 @@ if [[ -z "$MAESTRO_RUN_PASSWORD" && "$MAESTRO_RUN_USER" != "root" ]]; then
     MAESTRO_RUN_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
     info "已自动生成运行用户密码: $MAESTRO_RUN_PASSWORD"
 fi
+
+# 部署入口只支持 root SSH（系统操作需要特权，业务层通过 MAESTRO_RUN_USER 隔离）
+if [[ "$VPS_USER" != "root" ]]; then
+    die "VPS_USER 必须为 root（当前: $VPS_USER）。系统管理需 root 权限，业务执行以 $MAESTRO_RUN_USER 身份运行"
+fi
+
+# 业务用户 = root 时警告（Claude Code 内部禁止 root 运行）
+if [[ "$MAESTRO_RUN_USER" == "root" ]]; then
+    warn "MAESTRO_RUN_USER=root: Claude Code 禁止以 root 运行，建议设置非 root 业务用户（如 viber）"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---- SSH 连接复用（ControlMaster） ----
 # 整个脚本生命周期共用一个 SSH 连接，避免重复认证和触发防暴力破解
@@ -123,6 +142,7 @@ cleanup_ssh() {
         info "SSH 连接已关闭"
     fi
     rm -f "$CONTROL_PATH" 2>/dev/null || true
+    unset SSHPASS 2>/dev/null || true
 }
 trap cleanup_ssh EXIT INT TERM
 
@@ -130,6 +150,8 @@ trap cleanup_ssh EXIT INT TERM
 AUTH_OPTS=""
 AUTH_CMD=""
 if [[ -n "${VPS_SSH_KEY:-}" ]]; then
+    # 展开 tilde（用户可能按文档写 ~/.ssh/id_rsa）
+    VPS_SSH_KEY="${VPS_SSH_KEY/#\~/$HOME}"
     if [[ ! -f "$VPS_SSH_KEY" ]]; then
         die "SSH Key 文件不存在: $VPS_SSH_KEY"
     fi
@@ -143,7 +165,9 @@ elif [[ -n "$VPS_PASSWORD" ]]; then
     if ! command -v sshpass &>/dev/null; then
         die "密码登录需要 sshpass，请先安装: brew install sshpass（macOS）"
     fi
-    AUTH_CMD="sshpass -p $VPS_PASSWORD"
+    # 使用 -e 模式通过环境变量传递密码，避免 -p 在 ps 进程列表中暴露明文密码
+    export SSHPASS="$VPS_PASSWORD"
+    AUTH_CMD="sshpass -e"
 fi
 
 # 建立 ControlMaster 持久连接
@@ -158,6 +182,12 @@ run_ssh()       { $AUTH_CMD ssh $SSH_OPTS "${VPS_USER}@${VPS_HOST}" "$@" < /dev/
 run_ssh_pipe()  { $AUTH_CMD ssh $SSH_OPTS "${VPS_USER}@${VPS_HOST}" "$@"; }
 run_scp()       { $AUTH_CMD scp $SCP_OPTS "$@"; }
 
+# ---- shell-safe 变量转义（用于构造远端注入段） ----
+_qv() { printf '%q' "$1"; }
+
+# ---- YAML 字符串转义（转义 \ 和 " 以安全嵌入双引号值） ----
+_yaml_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
 # ============================================================
 # do_transfer() — 文件传输（从 do_deploy() Phase 1 拆分）
 # ============================================================
@@ -166,11 +196,10 @@ do_transfer() {
     run_ssh "mkdir -p $DEPLOY_DIR"
 
     if [[ "$DEPLOY_METHOD" == "rsync" ]]; then
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
         info "打包项目文件 ..."
         TARBALL="/tmp/maestro-deploy-$$.tar.gz"
         COPYFILE_DISABLE=1 tar czf "$TARBALL" \
+            --disable-copyfile \
             --no-mac-metadata \
             -C "$SCRIPT_DIR" \
             --exclude='.git' \
@@ -182,6 +211,7 @@ do_transfer() {
             --exclude='__pycache__' \
             --exclude='*.pyc' \
             --exclude='.env' \
+            --exclude='deploy' \
             .
 
         info "上传到 VPS ..."
@@ -204,9 +234,11 @@ do_transfer() {
                 git clone -b $GIT_BRANCH $GIT_REPO $DEPLOY_DIR
             fi
         "
+        # 设置目录所有权（与 rsync 模式一致）
+        [[ "$MAESTRO_RUN_USER" != "root" ]] && run_ssh "chown -R $MAESTRO_RUN_USER:$MAESTRO_RUN_USER $DEPLOY_DIR"
         ok "git 部署完成"
     else
-        die "不支持的部署方式: $DEPLOY_METHOD（仅支持 rsync | git）"
+        die "不支持的部署方式: ${DEPLOY_METHOD}（仅支持 rsync | git）"
     fi
 }
 
@@ -224,6 +256,51 @@ _set_run_user_password() {
 }
 
 # ============================================================
+# _ensure_codex_file_store() — 确保服务器上 Codex config.toml 包含 file 存储模式
+# 在 VPS 无浏览器环境中，Codex CLI 需要将 OAuth 凭据存储为文件而非 keyring。
+# 参数:
+#   $1 - remote_dir : 服务器端 Codex 配置目录（如 "/home/viber/.codex"）
+# 返回:
+#   0 - 成功（配置已存在或已写入）
+#   1 - 失败（写入失败）
+# 副作用:
+#   - 创建 remote_dir 目录（如不存在）
+#   - 创建或追加 config.toml 文件
+#   - 设置文件权限 600，owner 为 MAESTRO_RUN_USER
+# ============================================================
+_ensure_codex_file_store() {
+    local remote_dir="$1"
+    local config_file="${remote_dir}/config.toml"
+
+    # 1. 确保目录存在
+    run_ssh "mkdir -p ${remote_dir}" 2>/dev/null || true
+
+    # 2. 检查 config.toml 是否已包含 cli_auth_credentials_store 配置
+    if run_ssh "grep -q '^cli_auth_credentials_store' ${config_file} 2>/dev/null"; then
+        info "Codex config.toml 已包含 file 存储模式配置，跳过"
+        return 0
+    fi
+
+    # 3. 追加配置（文件不存在时自动创建）
+    info "配置 Codex CLI file 存储模式 ..."
+    if ! run_ssh "echo 'cli_auth_credentials_store = \"file\"' >> ${config_file}" 2>/dev/null; then
+        warn "Codex config.toml 写入失败"
+        return 1
+    fi
+
+    # 4. 设置权限和所有者
+    run_ssh "chmod 600 ${config_file}" 2>/dev/null || true
+    run_ssh "chmod 700 ${remote_dir}" 2>/dev/null || true
+    if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
+        run_ssh "chown ${MAESTRO_RUN_USER}:${MAESTRO_RUN_USER} ${config_file}" 2>/dev/null || true
+        run_ssh "chown ${MAESTRO_RUN_USER}:${MAESTRO_RUN_USER} ${remote_dir}" 2>/dev/null || true
+    fi
+
+    ok "Codex CLI file 存储模式已配置"
+    return 0
+}
+
+# ============================================================
 # do_remote_full_install() — 完整远程安装（从 do_deploy() Phase 2 拆分）
 # ============================================================
 do_remote_full_install() {
@@ -234,20 +311,22 @@ do_remote_full_install() {
 
     info "========== Phase 2: 远程安装 =========="
 
-    # ---- 构造远程变量注入段 ----
+    # ---- 构造远程变量注入段（使用 _qv 安全转义，防止值含特殊字符时断裂） ----
     VARS_SECTION="
-DEPLOY_DIR='${DEPLOY_DIR}'
-VPS_USER='${VPS_USER}'
-ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY}'
-MANAGER_PROVIDER='${MANAGER_PROVIDER}'
-MANAGER_MODEL='${MANAGER_MODEL}'
-MANAGER_API_KEY='${MANAGER_API_KEY}'
-MANAGER_BASE_URL='${MANAGER_BASE_URL}'
-TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}'
-TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}'
-SETUP_SYSTEMD='${SETUP_SYSTEMD}'
-MAESTRO_RUN_USER='${MAESTRO_RUN_USER}'
-MANAGER_IP_VERSION='${MANAGER_IP_VERSION}'
+DEPLOY_DIR=$(_qv "$DEPLOY_DIR")
+VPS_USER=$(_qv "$VPS_USER")
+ANTHROPIC_API_KEY=$(_qv "$ANTHROPIC_API_KEY")
+MANAGER_PROVIDER=$(_qv "$MANAGER_PROVIDER")
+MANAGER_MODEL=$(_qv "$MANAGER_MODEL")
+MANAGER_API_KEY=$(_qv "$MANAGER_API_KEY")
+MANAGER_BASE_URL=$(_qv "$MANAGER_BASE_URL")
+TELEGRAM_BOT_TOKEN=$(_qv "$TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID=$(_qv "$TELEGRAM_CHAT_ID")
+SETUP_SYSTEMD=$(_qv "$SETUP_SYSTEMD")
+MAESTRO_RUN_USER=$(_qv "$MAESTRO_RUN_USER")
+PREFER_IPV4=$(_qv "$PREFER_IPV4")
+CODING_TOOLS=$(_qv "$CODING_TOOLS")
+DEFAULT_CODING_TOOL=$(_qv "$DEFAULT_CODING_TOOL")
 "
 
     # ---- 构造远程安装脚本 ----
@@ -259,6 +338,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 info()  { echo -e "${BLUE}[远程]${NC} $*"; }
 ok()    { echo -e "${GREEN}[远程 OK]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[远程 WARN]${NC} $*"; }
+
+# YAML 字符串转义（转义 \ 和 " 以安全嵌入双引号值）
+_yaml_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 die()   { echo -e "${RED}[远程 ERROR]${NC} $*" >&2; exit 1; }
 
 # ---- 前置检查 ----
@@ -318,7 +400,6 @@ if [[ ! -f "$STATE_FILE" ]]; then
         echo "# 部署前环境快照（deploy.sh 自动生成）"
         echo "# 清理时只删除由 deploy.sh 安装的组件"
         command -v node &>/dev/null && echo "HAD_NODEJS=true" || echo "HAD_NODEJS=false"
-        command -v claude &>/dev/null && echo "HAD_CLAUDE=true" || echo "HAD_CLAUDE=false"
     } > "$STATE_FILE"
     ok "环境快照已记录: $STATE_FILE"
 else
@@ -331,6 +412,24 @@ export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -qq
 $SUDO apt-get install -y -qq python3 python3-pip python3-venv git curl software-properties-common
 ok "系统依赖安装完成"
+
+# ---- 系统级 IPv4 优先（gai.conf） ----
+if [[ "$PREFER_IPV4" == "true" ]]; then
+    GAI_CONF="/etc/gai.conf"
+    GAI_LINE="precedence ::ffff:0:0/96  100"
+    GAI_MARKER="# maestro: prefer IPv4"
+    if grep -qF "$GAI_MARKER" "$GAI_CONF" 2>/dev/null; then
+        ok "gai.conf IPv4 优先已配置（跳过）"
+    else
+        info "配置系统级 IPv4 优先（/etc/gai.conf）..."
+        {
+            echo ""
+            echo "$GAI_MARKER"
+            echo "$GAI_LINE"
+        } >> "$GAI_CONF"
+        ok "gai.conf 已配置: DNS 解析优先 IPv4（不禁用 IPv6）"
+    fi
+fi
 
 # ---- Python 版本检查 ----
 PYTHON="python3"
@@ -367,14 +466,56 @@ else
     ok "Node.js 安装完成: $(node --version)"
 fi
 
-# ---- Claude Code ----
-if command -v claude &>/dev/null; then
-    ok "Claude Code 已安装: $(claude --version 2>/dev/null || echo 'installed')"
-else
-    info "安装 Claude Code ..."
-    $SUDO npm install -g @anthropic-ai/claude-code
-    ok "Claude Code 安装完成"
+# ---- 编码工具安装（非 root 用户走用户级 npm prefix） ----
+NPM_PREFIX="$RUN_HOME/.npm-global"
+NPM_BIN="$NPM_PREFIX/bin"
+
+_npm_install_tool() {
+    local pkg="$1"
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        if command -v runuser &>/dev/null; then
+            runuser -u "$MAESTRO_RUN_USER" -- npm install -g --prefix "$NPM_PREFIX" "$pkg"
+        else
+            su -s /bin/sh "$MAESTRO_RUN_USER" <<SU_EOF
+npm install -g --prefix '$NPM_PREFIX' '$pkg'
+SU_EOF
+        fi
+    else
+        npm install -g "$pkg"
+    fi
+}
+
+# 非 root 时创建 npm prefix 目录
+if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+    mkdir -p "$NPM_PREFIX"
+    chown "$MAESTRO_RUN_USER:$MAESTRO_RUN_USER" "$NPM_PREFIX"
 fi
+
+IFS=',' read -ra TOOL_LIST <<< "$CODING_TOOLS"
+for tool in "${TOOL_LIST[@]}"; do
+    tool=$(echo "$tool" | xargs)
+    case "$tool" in
+        claude)
+            if [[ -x "$NPM_BIN/claude" ]] || command -v claude &>/dev/null; then
+                ok "Claude Code 已安装"
+            else
+                info "安装 Claude Code ..."
+                _npm_install_tool "@anthropic-ai/claude-code"
+                ok "Claude Code 安装完成"
+            fi
+            ;;
+        codex)
+            if [[ -x "$NPM_BIN/codex" ]] || command -v codex &>/dev/null; then
+                ok "Codex CLI 已安装"
+            else
+                info "安装 Codex CLI ..."
+                _npm_install_tool "@openai/codex"
+                ok "Codex CLI 安装完成"
+            fi
+            ;;
+        *) warn "未知编码工具: ${tool}，跳过" ;;
+    esac
+done
 
 # ---- Python venv + pip install ----
 info "创建 Python 虚拟环境 ..."
@@ -399,20 +540,16 @@ CONFIG_FILE="$DEPLOY_DIR/config.yaml"
 TG_ENABLED="false"
 [[ -n "$TELEGRAM_BOT_TOKEN" ]] && TG_ENABLED="true"
 
-cat > "$CONFIG_FILE" << CFGEOF
-# 由 deploy.sh 自动生成
-manager:
-  provider: $MANAGER_PROVIDER
-  model: $MANAGER_MODEL
-  api_key: "$MANAGER_API_KEY"
-CFGEOF
+{
+    echo "# 由 deploy.sh 自动生成"
+    echo "manager:"
+    echo "  provider: $MANAGER_PROVIDER"
+    echo "  model: $MANAGER_MODEL"
+    echo "  api_key: \"$(_yaml_str "$MANAGER_API_KEY")\""
+} > "$CONFIG_FILE"
 
 if [[ -n "$MANAGER_BASE_URL" ]]; then
-    echo "  base_url: \"$MANAGER_BASE_URL\"" >> "$CONFIG_FILE"
-fi
-
-if [[ "$MANAGER_IP_VERSION" != "0" ]]; then
-    echo "  ip_version: $MANAGER_IP_VERSION" >> "$CONFIG_FILE"
+    echo "  base_url: \"$(_yaml_str "$MANAGER_BASE_URL")\"" >> "$CONFIG_FILE"
 fi
 
 cat >> "$CONFIG_FILE" << CFGEOF
@@ -421,36 +558,60 @@ cat >> "$CONFIG_FILE" << CFGEOF
   request_timeout: 60
   retry_count: 3
 
-coding_tool:
-  type: claude
-  command: claude
-  auto_approve: true
-  timeout: 600
-
-context:
-  max_recent_turns: 5
-  max_result_chars: 3000
-
-safety:
-  max_consecutive_similar: 3
-  max_parallel_tasks: 3
-
-telegram:
-  enabled: $TG_ENABLED
-  bot_token: "$TELEGRAM_BOT_TOKEN"
-  chat_id: "$TELEGRAM_CHAT_ID"
-  ask_user_timeout: 3600
-
-zellij:
-  enabled: false
-  auto_install: false
-
-logging:
-  dir: ~/.maestro/logs
-  level: INFO
-  max_days: 30
 CFGEOF
+
+# 动态生成 coding_tools 段
+echo "coding_tools:" >> "$CONFIG_FILE"
+echo "  active_tool: $DEFAULT_CODING_TOOL" >> "$CONFIG_FILE"
+echo "  presets:" >> "$CONFIG_FILE"
+IFS=',' read -ra TOOL_LIST <<< "$CODING_TOOLS"
+for tool in "${TOOL_LIST[@]}"; do
+    tool=$(echo "$tool" | xargs)
+    case "$tool" in
+        claude)
+            cat >> "$CONFIG_FILE" << 'PRESET_EOF'
+    claude:
+      type: claude
+      command: claude
+      auto_approve: true
+      timeout: 600
+PRESET_EOF
+            ;;
+        codex)
+            cat >> "$CONFIG_FILE" << 'PRESET_EOF'
+    codex:
+      type: codex
+      command: codex
+      auto_approve: true
+      timeout: 600
+PRESET_EOF
+            ;;
+    esac
+done
+
+{
+    echo ""
+    echo "context:"
+    echo "  max_recent_turns: 5"
+    echo "  max_result_chars: 3000"
+    echo ""
+    echo "safety:"
+    echo "  max_consecutive_similar: 3"
+    echo "  max_parallel_tasks: 3"
+    echo ""
+    echo "telegram:"
+    echo "  enabled: $TG_ENABLED"
+    echo "  bot_token: \"$(_yaml_str "$TELEGRAM_BOT_TOKEN")\""
+    echo "  chat_id: \"$(_yaml_str "$TELEGRAM_CHAT_ID")\""
+    echo "  ask_user_timeout: 3600"
+    echo ""
+    echo "logging:"
+    echo "  dir: ~/.maestro/logs"
+    echo "  level: INFO"
+    echo "  max_days: 30"
+} >> "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
+[[ "$MAESTRO_RUN_USER" != "root" ]] && chown "$MAESTRO_RUN_USER:$MAESTRO_RUN_USER" "$CONFIG_FILE"
 ok "config.yaml 已生成"
 
 # ---- 环境变量 ----
@@ -459,7 +620,7 @@ info "配置环境变量 ..."
 DOT_ENV="$DEPLOY_DIR/.env"
 {
     echo "HOME=$RUN_HOME"
-    echo "PATH=$RUN_HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+    echo "PATH=$RUN_HOME/.npm-global/bin:$RUN_HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
     if [[ -n "$ANTHROPIC_API_KEY" ]]; then
         echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
     fi
@@ -478,7 +639,7 @@ fi
     if [[ -n "$ANTHROPIC_API_KEY" ]]; then
         echo "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\""
     fi
-    echo "export PATH=\"\$HOME/.local/bin:$DEPLOY_DIR/.venv/bin:\$PATH\""
+    echo "export PATH=\"\$HOME/.npm-global/bin:\$HOME/.local/bin:$DEPLOY_DIR/.venv/bin:\$PATH\""
     echo "$MARKER_END"
 } >> "$BASHRC"
 ok "环境变量已配置"
@@ -508,7 +669,7 @@ SVCEOF
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable maestro-daemon
 
-    if [[ -n "$ANTHROPIC_API_KEY" ]] || [[ -d "$RUN_HOME/.claude" ]]; then
+    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
         $SUDO systemctl restart maestro-daemon
         ok "systemd 服务已创建并启动"
     else
@@ -553,17 +714,40 @@ do_update_config() {
 manager:
   provider: $MANAGER_PROVIDER
   model: $MANAGER_MODEL
-  api_key: \"$MANAGER_API_KEY\""
+  api_key: \"$(_yaml_str "$MANAGER_API_KEY")\""
 
     if [[ -n "$MANAGER_BASE_URL" ]]; then
         CONFIG_CONTENT="$CONFIG_CONTENT
-  base_url: \"$MANAGER_BASE_URL\""
+  base_url: \"$(_yaml_str "$MANAGER_BASE_URL")\""
     fi
 
-    if [[ "$MANAGER_IP_VERSION" != "0" ]]; then
-        CONFIG_CONTENT="$CONFIG_CONTENT
-  ip_version: $MANAGER_IP_VERSION"
-    fi
+    # 动态生成 coding_tools 段
+    local CODING_TOOLS_SECTION
+    CODING_TOOLS_SECTION="coding_tools:
+  active_tool: $DEFAULT_CODING_TOOL
+  presets:"
+    IFS=',' read -ra TOOL_LIST <<< "$CODING_TOOLS"
+    for tool in "${TOOL_LIST[@]}"; do
+        tool=$(echo "$tool" | xargs)
+        case "$tool" in
+            claude)
+                CODING_TOOLS_SECTION="$CODING_TOOLS_SECTION
+    claude:
+      type: claude
+      command: claude
+      auto_approve: true
+      timeout: 600"
+                ;;
+            codex)
+                CODING_TOOLS_SECTION="$CODING_TOOLS_SECTION
+    codex:
+      type: codex
+      command: codex
+      auto_approve: true
+      timeout: 600"
+                ;;
+        esac
+    done
 
     CONFIG_CONTENT="$CONFIG_CONTENT
   max_turns: 30
@@ -571,11 +755,7 @@ manager:
   request_timeout: 60
   retry_count: 3
 
-coding_tool:
-  type: claude
-  command: claude
-  auto_approve: true
-  timeout: 600
+$CODING_TOOLS_SECTION
 
 context:
   max_recent_turns: 5
@@ -587,13 +767,9 @@ safety:
 
 telegram:
   enabled: $TG_ENABLED
-  bot_token: \"$TELEGRAM_BOT_TOKEN\"
-  chat_id: \"$TELEGRAM_CHAT_ID\"
+  bot_token: \"$(_yaml_str "$TELEGRAM_BOT_TOKEN")\"
+  chat_id: \"$(_yaml_str "$TELEGRAM_CHAT_ID")\"
   ask_user_timeout: 3600
-
-zellij:
-  enabled: false
-  auto_install: false
 
 logging:
   dir: ~/.maestro/logs
@@ -613,14 +789,25 @@ logging:
 
     # 同步更新 .env 文件（ANTHROPIC_API_KEY 等环境变量）
     local ENV_CONTENT="HOME=$RUN_HOME
-PATH=$RUN_HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+PATH=$RUN_HOME/.npm-global/bin:$RUN_HOME/.local/bin:$DEPLOY_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin"
     if [[ -n "$ANTHROPIC_API_KEY" ]]; then
         ENV_CONTENT="$ENV_CONTENT
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
     fi
     echo "$ENV_CONTENT" | run_ssh_pipe "cat > $DEPLOY_DIR/.env && chmod 600 $DEPLOY_DIR/.env && [[ '$MAESTRO_RUN_USER' != 'root' ]] && chown $MAESTRO_RUN_USER:$MAESTRO_RUN_USER $DEPLOY_DIR/.env || true"
 
-    ok "config.yaml 和 .env 已更新"
+    # 同步更新 .bashrc PATH（确保 update 后交互 shell 也能找到编码工具）
+    local BASHRC_CONTENT="# >>> maestro >>>"
+    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
+        BASHRC_CONTENT="$BASHRC_CONTENT
+export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY\""
+    fi
+    BASHRC_CONTENT="$BASHRC_CONTENT
+export PATH=\"\$HOME/.npm-global/bin:\$HOME/.local/bin:$DEPLOY_DIR/.venv/bin:\$PATH\"
+# <<< maestro <<<"
+    echo "$BASHRC_CONTENT" | run_ssh_pipe "BASHRC='$RUN_HOME/.bashrc' && sed -i '/# >>> maestro >>>/,/# <<< maestro <<</d' \"\$BASHRC\" && cat >> \"\$BASHRC\""
+
+    ok "config.yaml、.env 和 .bashrc 已更新"
 }
 
 # ============================================================
@@ -659,11 +846,11 @@ StartLimitBurst=5
 WantedBy=multi-user.target"
         echo "$SVC_CONTENT" | run_ssh_pipe "cat > /etc/systemd/system/maestro-daemon.service && systemctl daemon-reload && systemctl restart maestro-daemon"
         sleep 2
-        DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
+        DAEMON_STATUS=$(run_ssh "systemctl is-active maestro-daemon 2>/dev/null" || true)
         if [[ "$DAEMON_STATUS" == "active" ]]; then
             ok "maestro-daemon 已重启（User=${MAESTRO_RUN_USER}）"
         else
-            warn "maestro-daemon 重启异常，请检查: sudo systemctl status maestro-daemon"
+            warn "maestro-daemon 重启异常，请检查: systemctl status maestro-daemon"
         fi
     else
         info "maestro-daemon 未启用，跳过重启"
@@ -671,9 +858,10 @@ WantedBy=multi-user.target"
 }
 
 # ============================================================
-# do_claude_auth() — Claude Code 认证引导（从 do_deploy() 尾部拆分）
+# do_tool_auth() — 编码工具认证引导（支持 claude / codex）
+# 安装后统一引导用户手动登录，不接管认证过程
 # ============================================================
-do_claude_auth() {
+do_tool_auth() {
     # 获取运行用户的 HOME
     local RUN_HOME
     if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
@@ -682,68 +870,83 @@ do_claude_auth() {
         RUN_HOME=$(run_ssh "echo \$HOME")
     fi
 
-    if [[ -z "$ANTHROPIC_API_KEY" ]]; then
-        if run_ssh "test -d $RUN_HOME/.claude" 2>/dev/null; then
-            ok "Claude Code 已认证（检测到 $RUN_HOME/.claude）"
+    IFS=',' read -ra TOOL_LIST <<< "$CODING_TOOLS"
+    local PENDING=()  # 收集需要手动登录的工具
 
-            if [[ -n "$TELEGRAM_BOT_TOKEN" && "$SETUP_SYSTEMD" == "true" ]]; then
-                DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
-                if [[ "$DAEMON_STATUS" != "active" ]]; then
-                    info "启动 Telegram Daemon ..."
-                    run_ssh "sudo systemctl restart maestro-daemon"
-                    sleep 2
-                    DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
+    for tool in "${TOOL_LIST[@]}"; do
+        tool=$(echo "$tool" | xargs)
+        case "$tool" in
+            claude)
+                if [[ -n "$ANTHROPIC_API_KEY" ]]; then
+                    ok "Claude Code: API Key 模式，跳过登录"
+                    continue
                 fi
-                if [[ "$DAEMON_STATUS" == "active" ]]; then
-                    ok "Telegram Daemon 运行中"
-                else
-                    warn "Daemon 启动异常，请检查: sudo systemctl status maestro-daemon"
-                fi
+                PENDING+=("Claude Code|claude login|$RUN_HOME/.claude|claude")
+                ;;
+            codex)
+                # 确保 config.toml 包含 file 存储模式（VPS 无浏览器环境必需）
+                _ensure_codex_file_store "$RUN_HOME/.codex" || warn "Codex file 存储模式配置失败"
+                PENDING+=("Codex CLI|codex login --device-auth|$RUN_HOME/.codex|codex")
+                ;;
+            *) continue ;;
+        esac
+    done
+
+    # 如有需要认证的工具，一次性提示用户手动登录
+    local all_authed=true
+    if [[ ${#PENDING[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "${YELLOW}===== 以下编码工具需要登录认证 =====${NC}"
+        echo ""
+        echo "  请打开另一个终端窗口，执行："
+        echo -e "    ${GREEN}ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}${NC}"
+        if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
+            echo -e "    ${GREEN}su - $MAESTRO_RUN_USER${NC}"
+        fi
+        for entry in "${PENDING[@]}"; do
+            IFS='|' read -r n c d t <<< "$entry"
+            echo -e "    ${GREEN}${c}${NC}    # ${n}"
+        done
+        echo ""
+        echo -e "${YELLOW}  全部完成后按 Enter 继续 ...${NC}"
+        read -r < /dev/tty
+
+        # 逐个验证认证结果
+        for entry in "${PENDING[@]}"; do
+            IFS='|' read -r n c d t <<< "$entry"
+            local auth_file
+            case "$t" in
+                claude) auth_file="${d}/.credentials.json" ;;
+                codex)  auth_file="${d}/auth.json" ;;
+                *)      auth_file="" ;;
+            esac
+            if [[ -n "$auth_file" ]] && run_ssh "test -s \"${auth_file}\"" 2>/dev/null; then
+                ok "$n 认证成功"
+            else
+                warn "$n 可能未完成认证，请稍后手动执行: $c"
+                all_authed=false
+            fi
+        done
+    fi
+
+    # 仅当所有编码工具认证完成后才启动 daemon，避免半可用状态
+    if [[ -n "$TELEGRAM_BOT_TOKEN" && "$SETUP_SYSTEMD" == "true" ]]; then
+        if [[ "$all_authed" == "true" ]]; then
+            DAEMON_STATUS=$(run_ssh "systemctl is-active maestro-daemon 2>/dev/null" || true)
+            if [[ "$DAEMON_STATUS" != "active" ]]; then
+                info "启动 Telegram Daemon ..."
+                run_ssh "systemctl restart maestro-daemon" 2>/dev/null || true
+                sleep 2
+                DAEMON_STATUS=$(run_ssh "systemctl is-active maestro-daemon 2>/dev/null" || true)
+            fi
+            if [[ "$DAEMON_STATUS" == "active" ]]; then
+                ok "Telegram Daemon 运行中"
+            else
+                warn "Daemon 启动异常，请检查: systemctl status maestro-daemon"
             fi
         else
-            echo ""
-            echo -e "${YELLOW}============================================================${NC}"
-            echo -e "${YELLOW}  Claude Code 登录认证（只需一次）${NC}"
-            echo -e "${YELLOW}============================================================${NC}"
-            echo ""
-            echo "  请打开另一个终端窗口，执行以下命令："
-            echo ""
-            echo -e "    ${GREEN}ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}${NC}"
-            if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
-                echo -e "    ${GREEN}su - $MAESTRO_RUN_USER${NC}"
-            fi
-            echo -e "    ${GREEN}claude login${NC}"
-            echo ""
-            echo "  按提示在浏览器中完成授权。"
-            echo "  认证信息保存在 $RUN_HOME/.claude/，所有终端会话共享，只需登录一次。"
-            echo ""
-            echo -e "${YELLOW}  完成后回到此窗口按 Enter 继续 ...${NC}"
-            read -r < /dev/tty
-
-            info "检查 Claude Code 认证状态 ..."
-            if run_ssh "test -d $RUN_HOME/.claude" 2>/dev/null; then
-                ok "Claude Code 认证成功"
-
-                if [[ -n "$TELEGRAM_BOT_TOKEN" && "$SETUP_SYSTEMD" == "true" ]]; then
-                    info "启动 Telegram Daemon ..."
-                    run_ssh "sudo systemctl restart maestro-daemon"
-                    sleep 2
-                    DAEMON_STATUS=$(run_ssh "sudo systemctl is-active maestro-daemon 2>/dev/null" || true)
-                    if [[ "$DAEMON_STATUS" == "active" ]]; then
-                        ok "Telegram Daemon 已启动"
-                    else
-                        warn "Daemon 启动异常，请检查: sudo systemctl status maestro-daemon"
-                    fi
-                fi
-            else
-                warn "未检测到 $RUN_HOME/.claude 目录，claude login 可能未完成"
-                echo ""
-                echo "  你可以稍后 SSH 到 VPS 手动执行："
-                echo "    claude login"
-                if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
-                    echo "    sudo systemctl start maestro-daemon"
-                fi
-            fi
+            warn "部分编码工具未完成认证，Telegram Daemon 暂不启动"
+            info "完成认证后可执行: systemctl restart maestro-daemon"
         fi
     fi
 }
@@ -752,18 +955,14 @@ do_claude_auth() {
 # do_init() — 首次部署（组合函数）
 # ============================================================
 do_init() {
-    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
-        info "Claude Code 认证: API Key（按量计费）"
-    else
-        info "Claude Code 认证: 部署后引导 claude login（Max/Pro 订阅）"
-    fi
+    info "编码工具: ${CODING_TOOLS}（默认激活: ${DEFAULT_CODING_TOOL}）"
 
     do_transfer
     do_remote_full_install
 
     ok "========== 远程安装完成! =========="
 
-    do_claude_auth
+    do_tool_auth
     _print_summary "init"
 }
 
@@ -775,19 +974,48 @@ _print_summary() {
 
     # 获取 daemon 状态
     local daemon_status
-    daemon_status=$(run_ssh "systemctl is-active maestro-daemon 2>/dev/null" || echo "未安装")
+    daemon_status=$(run_ssh "systemctl is-active maestro-daemon 2>/dev/null || true")
+    [[ -z "$daemon_status" ]] && daemon_status="未安装"
 
-    # 获取 Claude 认证状态
-    local claude_auth="未认证"
+    # 获取编码工具认证状态（遍历所有工具）
     local run_home
     if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
         run_home=$(run_ssh "eval echo ~$MAESTRO_RUN_USER" 2>/dev/null)
     else
         run_home=$(run_ssh "echo \$HOME" 2>/dev/null)
     fi
-    if run_ssh "test -d ${run_home}/.claude" 2>/dev/null; then
-        claude_auth="已认证"
-    fi
+
+    IFS=',' read -ra TOOL_LIST <<< "$CODING_TOOLS"
+    local tool_status_parts=()
+    local any_unauthed=false
+    for tool in "${TOOL_LIST[@]}"; do
+        tool=$(echo "$tool" | xargs)
+        case "$tool" in
+            claude)
+                if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+                    tool_status_parts+=("$tool (API Key)")
+                    continue
+                fi
+                if run_ssh "test -s ${run_home}/.claude/.credentials.json" 2>/dev/null; then
+                    tool_status_parts+=("$tool (已认证)")
+                else
+                    tool_status_parts+=("$tool (未认证)")
+                    any_unauthed=true
+                fi
+                ;;
+            codex)
+                if run_ssh "test -s ${run_home}/.codex/auth.json" 2>/dev/null; then
+                    tool_status_parts+=("$tool (已认证)")
+                else
+                    tool_status_parts+=("$tool (未认证)")
+                    any_unauthed=true
+                fi
+                ;;
+            *) continue ;;
+        esac
+    done
+    local tool_status_str
+    tool_status_str=$(IFS=', '; echo "${tool_status_parts[*]}")
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
@@ -811,7 +1039,8 @@ _print_summary() {
     echo -e "  ${CYAN}服务状态${NC}"
     echo "    部署目录: ${DEPLOY_DIR}"
     echo "    Telegram Daemon: ${daemon_status}"
-    echo "    Claude Code 认证: ${claude_auth}"
+    echo "    编码工具: ${tool_status_str}"
+    echo "    当前激活: ${DEFAULT_CODING_TOOL}"
     echo "    Manager: ${MANAGER_PROVIDER}/${MANAGER_MODEL}"
     echo ""
     echo -e "  ${CYAN}使用方式${NC}"
@@ -827,14 +1056,13 @@ _print_summary() {
     echo -e "      ${GREEN}cd $DEPLOY_DIR && source .venv/bin/activate${NC}"
     echo -e "      ${GREEN}maestro run \"你的需求\"${NC}"
 
-    if [[ "$claude_auth" == "未认证" ]]; then
+    if [[ "$any_unauthed" == "true" ]]; then
         echo ""
-        echo -e "  ${YELLOW}⚠ Claude Code 尚未认证，请先执行:${NC}"
+        echo -e "  ${YELLOW}⚠ 部分编码工具尚未认证，请 SSH 到 VPS 执行对应的 login 命令${NC}"
         echo -e "      ${GREEN}ssh ${VPS_SSH_KEY:+-i $VPS_SSH_KEY }-p $VPS_PORT ${VPS_USER}@${VPS_HOST}${NC}"
         if [[ "$MAESTRO_RUN_USER" != "$VPS_USER" ]]; then
             echo -e "      ${GREEN}su - $MAESTRO_RUN_USER${NC}"
         fi
-        echo -e "      ${GREEN}claude login${NC}"
     fi
     echo ""
 }
@@ -843,6 +1071,14 @@ _print_summary() {
 # do_update() — 业务逻辑更新（组合函数，新增）
 # ============================================================
 do_update() {
+    # 注意: update 只管代码+包+配置，绝不安装编码工具或修改系统环境
+    # 编码工具安装只在 init 时执行（do_remote_full_install）
+
+    # 前置检查：远程 .venv 是否存在（先于用户创建，避免 die 时遗留孤立用户）
+    if ! run_ssh "test -d $DEPLOY_DIR/.venv" 2>/dev/null; then
+        die "远程环境未初始化（$DEPLOY_DIR/.venv 不存在），请先执行: deploy.sh init"
+    fi
+
     # 前置检查：确保运行用户存在
     if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
         if ! run_ssh "id $MAESTRO_RUN_USER" 2>/dev/null; then
@@ -851,11 +1087,6 @@ do_update() {
             _set_run_user_password
             ok "用户 $MAESTRO_RUN_USER 已创建"
         fi
-    fi
-
-    # 前置检查：远程 .venv 是否存在
-    if ! run_ssh "test -d $DEPLOY_DIR/.venv" 2>/dev/null; then
-        die "远程环境未初始化（$DEPLOY_DIR/.venv 不存在），请先执行: deploy.sh init"
     fi
 
     # 备份远端 prompts/（如存在用户自定义内容）
@@ -884,6 +1115,22 @@ do_update() {
         fi
     " || true
 
+    # 系统级 IPv4 优先（gai.conf，幂等）
+    if [[ "$PREFER_IPV4" == "true" ]]; then
+        run_ssh "
+            GAI_CONF='/etc/gai.conf'
+            GAI_MARKER='# maestro: prefer IPv4'
+            if grep -qF \"\$GAI_MARKER\" \"\$GAI_CONF\" 2>/dev/null; then
+                echo '[远程] gai.conf IPv4 优先已配置（跳过）'
+            else
+                echo '' >> \"\$GAI_CONF\"
+                echo \"\$GAI_MARKER\" >> \"\$GAI_CONF\"
+                echo 'precedence ::ffff:0:0/96  100' >> \"\$GAI_CONF\"
+                echo '[远程 OK] gai.conf 已配置 IPv4 优先'
+            fi
+        "
+    fi
+
     # 从 deploy.env 重新生成远程 config.yaml（确保 API Key 等配置同步）
     do_update_config
 
@@ -902,6 +1149,7 @@ do_status() {
     # 用单次 SSH 收集所有信息，避免多次连接
     STATUS_OUTPUT=$(run_ssh "
         DEPLOY_DIR='${DEPLOY_DIR}'
+        RUN_HOME=\$(eval echo ~${MAESTRO_RUN_USER} 2>/dev/null || echo \"\$HOME\")
 
         echo '=== 系统信息 ==='
         echo \"OS: \$(lsb_release -ds 2>/dev/null || cat /etc/os-release 2>/dev/null | head -1 || echo unknown)\"
@@ -920,7 +1168,21 @@ do_status() {
         echo '=== 组件版本 ==='
         echo -n 'Python: '; python3 --version 2>&1 | awk '{print \$2}' || echo '未安装'
         echo -n 'Node.js: '; node --version 2>/dev/null || echo '未安装'
-        echo -n 'Claude Code: '; claude --version 2>/dev/null || echo '未安装'
+        NPM_BIN=\"\$RUN_HOME/.npm-global/bin\"
+        if [[ -x \"\$NPM_BIN/claude\" ]]; then
+            echo -n 'Claude Code: '; \"\$NPM_BIN/claude\" --version 2>/dev/null || echo '已安装（版本未知）'
+        elif command -v claude &>/dev/null; then
+            echo -n 'Claude Code: '; claude --version 2>/dev/null || echo '已安装（版本未知）'
+        else
+            echo 'Claude Code: 未安装'
+        fi
+        if [[ -x \"\$NPM_BIN/codex\" ]]; then
+            echo -n 'Codex CLI: '; \"\$NPM_BIN/codex\" --version 2>/dev/null || echo '已安装（版本未知）'
+        elif command -v codex &>/dev/null; then
+            echo -n 'Codex CLI: '; codex --version 2>/dev/null || echo '已安装（版本未知）'
+        else
+            echo 'Codex CLI: 未安装'
+        fi
 
         echo ''
         echo '=== Maestro ==='
@@ -946,12 +1208,29 @@ do_status() {
         fi
 
         echo ''
-        echo '=== Claude Code 认证 ==='
-        if [[ -d \"\$HOME/.claude\" ]]; then
-            echo '状态: 已认证 (~/.claude 存在)'
-        else
-            echo '状态: 未认证'
-        fi
+        echo '=== 编码工具认证 ==='
+        IFS=',' read -ra _STATUS_TOOLS <<< \"${CODING_TOOLS}\"
+        for _st in \"\${_STATUS_TOOLS[@]}\"; do
+            _st=\$(echo \"\$_st\" | xargs)
+            case \"\$_st\" in
+                claude)
+                    if [[ -n \"${ANTHROPIC_API_KEY}\" ]]; then
+                        echo 'Claude Code: API Key 模式'
+                    elif [[ -s \"\$RUN_HOME/.claude/.credentials.json\" ]]; then
+                        echo 'Claude Code: 已认证'
+                    else
+                        echo 'Claude Code: 未认证'
+                    fi
+                    ;;
+                codex)
+                    if [[ -s \"\$RUN_HOME/.codex/auth.json\" ]]; then
+                        echo 'Codex CLI: 已认证'
+                    else
+                        echo 'Codex CLI: 未认证'
+                    fi
+                    ;;
+            esac
+        done
 
         echo ''
         echo '=== Telegram Daemon ==='
@@ -971,8 +1250,8 @@ do_status() {
 
         echo ''
         echo '=== 运行中的 Maestro 任务 ==='
-        if [[ -d \"\$HOME/.maestro\" ]]; then
-            task_count=\$(find \"\$HOME/.maestro\" -name 'state.json' 2>/dev/null | wc -l)
+        if [[ -d \"\$RUN_HOME/.maestro\" ]]; then
+            task_count=\$(find \"\$RUN_HOME/.maestro\" -name 'state.json' 2>/dev/null | wc -l)
             echo \"任务数: \$task_count\"
         else
             echo '无任务记录'
@@ -990,7 +1269,8 @@ do_status() {
 }
 
 # ============================================================
-# do_clean() — 清理卸载（不变）
+# do_clean() — 清理卸载
+# 卸载时只处理"软件是否卸载"，不处理"认证目录是否删除"
 # ============================================================
 do_clean() {
     echo ""
@@ -1000,11 +1280,16 @@ do_clean() {
     echo -e "${YELLOW}  部署目录: ${DEPLOY_DIR}${NC}"
     echo -e "${YELLOW}============================================================${NC}"
     echo ""
-    # 读取环境快照（如有）判断哪些工具是部署脚本安装的
+
+    # 读取环境快照（如有）判断 Node.js 是否由部署脚本安装
     PRE_STATE=$(run_ssh "cat ${DEPLOY_DIR}/.pre-deploy-state 2>/dev/null" || true)
-    HAD_NODEJS=true; HAD_CLAUDE=true
+    HAD_NODEJS=true
     if [[ -n "$PRE_STATE" ]]; then
-        eval "$(echo "$PRE_STATE" | grep -E '^HAD_')"
+        while IFS='=' read -r key val; do
+            case "$key" in
+                HAD_NODEJS) [[ "$val" == "false" ]] && HAD_NODEJS="false" ;;
+            esac
+        done < <(echo "$PRE_STATE" | grep -E '^HAD_NODEJS=(true|false)$')
     fi
 
     echo "  将执行以下操作："
@@ -1012,43 +1297,79 @@ do_clean() {
     echo "    2. 删除部署目录（${DEPLOY_DIR}）"
     echo "    3. 清理 bashrc 中的 maestro 环境变量"
     echo "    4. 删除 Maestro 日志（~/.maestro）"
-    echo "    5. 删除 Claude Code 认证（~/.claude）"
-    [[ "$HAD_CLAUDE" == "false" ]] && echo "    6. 卸载 Claude Code（部署时安装）"
-    [[ "$HAD_NODEJS" == "false" ]] && echo "    7. 卸载 Node.js（部署时安装）"
+    [[ "$HAD_NODEJS" == "false" ]] && echo "    5. 卸载 Node.js（部署时安装）"
     echo ""
-    echo "  以下内容保留（部署前已存在）："
+    echo "  以下内容保留："
     KEEP_LIST=""
     [[ "$HAD_NODEJS" == "true" ]] && KEEP_LIST="${KEEP_LIST}Node.js、"
-    [[ "$HAD_CLAUDE" == "true" ]] && KEEP_LIST="${KEEP_LIST}Claude Code、"
-    KEEP_LIST="${KEEP_LIST}Python（系统级）"
+    KEEP_LIST="${KEEP_LIST}Python（系统级）、~/.claude（认证数据）、~/.codex（认证数据）"
     echo "    - ${KEEP_LIST}"
     echo ""
     echo -e "${RED}  此操作不可恢复！${NC}"
     echo ""
-    read -r -p "  确认清理？输入 yes 继续: " CONFIRM
-
-    if [[ "$CONFIRM" != "yes" ]]; then
-        info "已取消"
-        return
-    fi
+    read -r -p "  确认执行清理？[y/N] " CONFIRM
+    case "$CONFIRM" in
+        [yY]|[yY][eE][sS]) ;;
+        *)
+            info "已取消"
+            return
+            ;;
+    esac
 
     info "开始清理 ..."
 
-    CLEAN_SCRIPT=$(cat << 'CLEAN_EOF'
-set -uo pipefail
+    local RUN_HOME
+    if [[ "$MAESTRO_RUN_USER" != "root" ]]; then
+        RUN_HOME=$(run_ssh "eval echo ~$MAESTRO_RUN_USER")
+    else
+        RUN_HOME=$(run_ssh "echo \$HOME")
+    fi
 
-SUDO=""
+    # ---- 询问是否卸载编码工具软件 ----
+    UNINSTALL_CLAUDE="false"
+    UNINSTALL_CODEX="false"
+
+    IFS=',' read -ra TOOL_LIST_CHECK <<< "$CODING_TOOLS"
+    for tool in "${TOOL_LIST_CHECK[@]}"; do
+        tool=$(echo "$tool" | xargs)
+        case "$tool" in
+            claude)
+                echo ""
+                read -r -p "  是否卸载 Claude Code？[y/N] " DEL_CLAUDE
+                case "$DEL_CLAUDE" in
+                    [yY]|[yY][eE][sS]) UNINSTALL_CLAUDE="true" ;;
+                    *) UNINSTALL_CLAUDE="false" ;;
+                esac
+                ;;
+            codex)
+                echo ""
+                read -r -p "  是否卸载 Codex CLI？[y/N] " DEL_CODEX
+                case "$DEL_CODEX" in
+                    [yY]|[yY][eE][sS]) UNINSTALL_CODEX="true" ;;
+                    *) UNINSTALL_CODEX="false" ;;
+                esac
+                ;;
+        esac
+    done
+
+    CLEAN_SCRIPT=$(cat << 'CLEAN_EOF'
+set -euo pipefail
+
+# 清理脚本必须以 root 执行（由 deploy.sh root SSH 保证）
 if [[ "$(id -u)" -ne 0 ]]; then
-    sudo -n true 2>/dev/null && SUDO="sudo"
+    echo "[清理] 错误: 必须以 root 身份执行"
+    exit 1
 fi
+
+# RUN_HOME 由管道注入（见脚本末尾变量块），无需在此解析
 
 # 停止 systemd 服务
 if systemctl is-enabled maestro-daemon &>/dev/null; then
     echo "[清理] 停止 maestro-daemon 服务 ..."
-    $SUDO systemctl stop maestro-daemon 2>/dev/null || true
-    $SUDO systemctl disable maestro-daemon 2>/dev/null || true
-    $SUDO rm -f /etc/systemd/system/maestro-daemon.service
-    $SUDO systemctl daemon-reload
+    systemctl stop maestro-daemon 2>/dev/null || true
+    systemctl disable maestro-daemon 2>/dev/null || true
+    rm -f /etc/systemd/system/maestro-daemon.service
+    systemctl daemon-reload
     echo "[清理] systemd 服务已移除"
 else
     echo "[清理] systemd 服务不存在，跳过"
@@ -1063,7 +1384,7 @@ else
 fi
 
 # 清理 bashrc
-BASHRC="$HOME/.bashrc"
+BASHRC="$RUN_HOME/.bashrc"
 if [[ -f "$BASHRC" ]] && grep -q '# >>> maestro >>>' "$BASHRC"; then
     sed -i '/# >>> maestro >>>/,/# <<< maestro <<</d' "$BASHRC"
     echo "[清理] bashrc 环境变量已清理"
@@ -1071,31 +1392,82 @@ else
     echo "[清理] bashrc 无 maestro 配置，跳过"
 fi
 
+# 清理 gai.conf 中 maestro 写入的 IPv4 优先配置
+GAI_CONF="/etc/gai.conf"
+GAI_MARKER="# maestro: prefer IPv4"
+if [[ -f "$GAI_CONF" ]] && grep -qF "$GAI_MARKER" "$GAI_CONF"; then
+    # 精确删除标记行 + 紧随其后的 precedence 行（不影响文件其他空行）
+    sed -i "/$GAI_MARKER/{N;d;}" "$GAI_CONF"
+    echo "[清理] gai.conf IPv4 优先配置已移除"
+else
+    echo "[清理] gai.conf 无 maestro 配置，跳过"
+fi
+
 # 清理日志和任务记录
-if [[ -d "$HOME/.maestro" ]]; then
-    rm -rf "$HOME/.maestro"
-    echo "[清理] ~/.maestro 已删除"
+if [[ -d "$RUN_HOME/.maestro" ]]; then
+    rm -rf "$RUN_HOME/.maestro"
+    echo "[清理] $RUN_HOME/.maestro 已删除"
 fi
 
-# 删除 Claude Code 认证
-if [[ -d "$HOME/.claude" ]]; then
-    rm -rf "$HOME/.claude"
-    echo "[清理] ~/.claude 认证已删除"
-fi
-
-# 根据快照决定是否卸载工具
-if [[ "$HAD_CLAUDE" == "false" ]]; then
+# 卸载 Claude Code（根据用户选择，只执行官方卸载命令，不删除 ~/.claude）
+if [[ "$UNINSTALL_CLAUDE" == "true" ]]; then
     if command -v claude &>/dev/null; then
-        $SUDO npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
-        echo "[清理] Claude Code 已卸载（部署时安装）"
+        npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
+        echo "[清理] Claude Code 已卸载"
+    elif [[ -x "$RUN_HOME/.npm-global/bin/claude" ]]; then
+        NPM_PREFIX="$RUN_HOME/.npm-global"
+        if command -v runuser &>/dev/null; then
+            runuser -u "$MAESTRO_RUN_USER" -- npm uninstall -g --prefix "$NPM_PREFIX" @anthropic-ai/claude-code 2>/dev/null || true
+        else
+            su -s /bin/sh "$MAESTRO_RUN_USER" -c "npm uninstall -g --prefix '$NPM_PREFIX' @anthropic-ai/claude-code" 2>/dev/null || true
+        fi
+        echo "[清理] Claude Code 已卸载"
+    else
+        echo "[清理] Claude Code 未安装，跳过"
     fi
 else
-    echo "[清理] Claude Code 保留（部署前已存在）"
+    echo "[清理] Claude Code 已保留"
 fi
 
+# 卸载 Codex CLI（根据用户选择，只执行官方卸载命令，不删除 ~/.codex）
+if [[ "$UNINSTALL_CODEX" == "true" ]]; then
+    if command -v codex &>/dev/null; then
+        npm uninstall -g @openai/codex 2>/dev/null || true
+        echo "[清理] Codex CLI 已卸载"
+    elif [[ -x "$RUN_HOME/.npm-global/bin/codex" ]]; then
+        NPM_PREFIX="$RUN_HOME/.npm-global"
+        if command -v runuser &>/dev/null; then
+            runuser -u "$MAESTRO_RUN_USER" -- npm uninstall -g --prefix "$NPM_PREFIX" @openai/codex 2>/dev/null || true
+        else
+            su -s /bin/sh "$MAESTRO_RUN_USER" -c "npm uninstall -g --prefix '$NPM_PREFIX' @openai/codex" 2>/dev/null || true
+        fi
+        echo "[清理] Codex CLI 已卸载"
+    else
+        echo "[清理] Codex CLI 未安装，跳过"
+    fi
+else
+    echo "[清理] Codex CLI 已保留"
+fi
+
+# Node.js 卸载（仅当部署时安装的才卸载，且已配置的编码工具没有被保留）
 if [[ "$HAD_NODEJS" == "false" ]]; then
-    $SUDO apt-get remove -y -qq nodejs 2>/dev/null || true
-    echo "[清理] Node.js 已卸载（部署时安装）"
+    # 检查 CODING_TOOLS 中是否有工具被保留（只看实际配置的工具）
+    _any_tool_kept=false
+    IFS=',' read -ra _CT <<< "$CODING_TOOLS"
+    for _t in "${_CT[@]}"; do
+        _t=$(echo "$_t" | xargs)
+        if [[ "$_t" == "claude" && "$UNINSTALL_CLAUDE" == "false" ]]; then
+            _any_tool_kept=true
+        elif [[ "$_t" == "codex" && "$UNINSTALL_CODEX" == "false" ]]; then
+            _any_tool_kept=true
+        fi
+    done
+    if [[ "$_any_tool_kept" == "true" ]]; then
+        echo "[清理] Node.js 保留（有编码工具被保留，Node.js 是其运行时依赖）"
+    else
+        apt-get remove -y -qq nodejs 2>/dev/null || true
+        echo "[清理] Node.js 已卸载（部署时安装）"
+    fi
 else
     echo "[清理] Node.js 保留（部署前已存在）"
 fi
@@ -1105,16 +1477,60 @@ echo "[清理] 全部完成"
 CLEAN_EOF
 )
 
-    echo "DEPLOY_DIR='${DEPLOY_DIR}'
-HAD_NODEJS='${HAD_NODEJS}'
-HAD_CLAUDE='${HAD_CLAUDE}'
+    echo "DEPLOY_DIR=$(_qv "$DEPLOY_DIR")
+HAD_NODEJS=$(_qv "$HAD_NODEJS")
+UNINSTALL_CLAUDE=$(_qv "$UNINSTALL_CLAUDE")
+UNINSTALL_CODEX=$(_qv "$UNINSTALL_CODEX")
+CODING_TOOLS=$(_qv "$CODING_TOOLS")
+MAESTRO_RUN_USER=$(_qv "$MAESTRO_RUN_USER")
+RUN_HOME=$(_qv "$RUN_HOME")
 ${CLEAN_SCRIPT}" | run_ssh_pipe bash
 
     echo ""
     ok "VPS 清理完成"
     echo ""
-    echo "  已清理: systemd 服务、部署目录、环境变量、日志、认证"
-    echo "  工具卸载: 仅删除部署时安装的组件，部署前已有的已保留"
+    echo "  已清理: systemd 服务、部署目录、环境变量、日志"
+
+    # 工具卸载摘要（跟随 CODING_TOOLS 配置）
+    TOOL_SUMMARY=""
+    AUTH_KEPT=""
+    IFS=',' read -ra TOOL_LIST_SUMMARY <<< "$CODING_TOOLS"
+    for tool in "${TOOL_LIST_SUMMARY[@]}"; do
+        tool=$(echo "$tool" | xargs)
+        case "$tool" in
+            claude)
+                [[ "$UNINSTALL_CLAUDE" == "true" ]] && TOOL_SUMMARY="${TOOL_SUMMARY}Claude Code（已卸载）、" || TOOL_SUMMARY="${TOOL_SUMMARY}Claude Code（已保留）、"
+                AUTH_KEPT="${AUTH_KEPT}~/.claude、"
+                ;;
+            codex)
+                [[ "$UNINSTALL_CODEX" == "true" ]] && TOOL_SUMMARY="${TOOL_SUMMARY}Codex CLI（已卸载）、" || TOOL_SUMMARY="${TOOL_SUMMARY}Codex CLI（已保留）、"
+                AUTH_KEPT="${AUTH_KEPT}~/.codex、"
+                ;;
+        esac
+    done
+    # Node.js 摘要需反映实际结果（与远端卸载逻辑一致）
+    if [[ "$HAD_NODEJS" == "false" ]]; then
+        # 检查 CODING_TOOLS 中是否有工具被保留
+        local _any_kept=false
+        for tool in "${TOOL_LIST_SUMMARY[@]}"; do
+            tool=$(echo "$tool" | xargs)
+            case "$tool" in
+                claude) [[ "$UNINSTALL_CLAUDE" == "false" ]] && _any_kept=true ;;
+                codex)  [[ "$UNINSTALL_CODEX" == "false" ]]  && _any_kept=true ;;
+            esac
+        done
+        if [[ "$_any_kept" == "true" ]]; then
+            TOOL_SUMMARY="${TOOL_SUMMARY}Node.js（已保留，编码工具运行时依赖）、"
+        else
+            TOOL_SUMMARY="${TOOL_SUMMARY}Node.js（已卸载）、"
+        fi
+    else
+        TOOL_SUMMARY="${TOOL_SUMMARY}Node.js（已保留）、"
+    fi
+    TOOL_SUMMARY="${TOOL_SUMMARY%、}"
+    AUTH_KEPT="${AUTH_KEPT%、}"
+    echo "  工具处理: ${TOOL_SUMMARY}"
+    [[ -n "$AUTH_KEPT" ]] && echo "  认证数据: ${AUTH_KEPT} 已保留（不受卸载影响）"
     echo ""
     echo "  如需重新部署，再次运行此脚本选择「部署」即可。"
     echo ""
@@ -1144,17 +1560,17 @@ do_service() {
     case "$action" in
         start)
             info "启动 Daemon 服务 ..."
-            run_ssh "sudo systemctl start maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
+            run_ssh "systemctl start maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
             ok "启动命令已发送"
             ;;
         stop)
             info "停止 Daemon 服务 ..."
-            run_ssh "sudo systemctl stop maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
+            run_ssh "systemctl stop maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
             ok "停止命令已发送"
             ;;
         restart)
             info "重启 Daemon 服务 ..."
-            run_ssh "sudo systemctl restart maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
+            run_ssh "systemctl restart maestro-daemon 2>&1; echo '状态:' \$(systemctl is-active maestro-daemon 2>/dev/null)"
             ok "重启命令已发送"
             ;;
     esac

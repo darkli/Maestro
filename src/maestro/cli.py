@@ -11,6 +11,7 @@
   maestro abort <id>          终止任务
   maestro resume <id>         恢复崩溃的任务
   maestro report <id>         查看任务报告
+  maestro switch [tool]       切换当前编码工具
   maestro daemon start|stop|status  Telegram Daemon 管理
   maestro _worker <id> <dir> <req>  内部命令（不在帮助中显示）
 """
@@ -23,10 +24,20 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-from maestro.config import load_config, AppConfig
+from maestro.config import load_config, save_active_tool, AppConfig
 from maestro.registry import TaskRegistry
 from maestro.state import read_json_safe
 from maestro.orchestrator import setup_logging, _write_inbox
+
+
+def _check_not_root():
+    """禁止以 root 身份运行业务命令"""
+    allow_root = os.environ.get("MAESTRO_ALLOW_ROOT", "").strip().lower()
+    if os.geteuid() == 0 and allow_root not in ("1", "true", "yes"):
+        print("错误: 不允许以 root 身份运行 Maestro 业务命令")
+        print("  原因: Claude Code 禁止 root，状态/凭据应属于业务用户")
+        print("  解决: 切换到业务用户，或设置 MAESTRO_ALLOW_ROOT=1 强制跳过")
+        sys.exit(1)
 
 
 def main():
@@ -52,9 +63,6 @@ def main():
     run_parser.add_argument(
         "-w", "--working-dir", default=None,
         help="工作目录（默认当前目录）"
-    )
-    run_parser.add_argument(
-        "--no-zellij", action="store_true", help="禁用 Zellij 界面"
     )
     run_parser.add_argument("--provider", help="覆盖 Manager provider")
     run_parser.add_argument("--model", help="覆盖 Manager 模型")
@@ -129,6 +137,15 @@ def main():
     )
 
     # ============================================================
+    # switch 子命令
+    # ============================================================
+    switch_parser = subparsers.add_parser("switch", help="切换当前编码工具")
+    switch_parser.add_argument("tool", nargs="?", help="工具名（如 claude, codex）")
+    switch_parser.add_argument(
+        "-c", "--config", default="config.yaml", help="配置文件路径"
+    )
+
+    # ============================================================
     # _worker 内部命令（不在帮助中显示）
     # ============================================================
     worker_parser = subparsers.add_parser("_worker", help=argparse.SUPPRESS)
@@ -159,6 +176,7 @@ def main():
         "resume": _handle_resume,
         "report": _handle_report,
         "daemon": _handle_daemon,
+        "switch": _handle_switch,
         "_worker": _handle_worker,
     }
 
@@ -175,11 +193,10 @@ def main():
 
 def _handle_run(args):
     """处理 run 命令"""
+    _check_not_root()
     config = load_config(args.config)
 
     # 命令行参数覆盖配置
-    if args.no_zellij:
-        config.zellij.enabled = False
     if args.provider:
         config.manager.provider = args.provider
     if args.model:
@@ -231,24 +248,31 @@ def _handle_run(args):
         orchestrator.run(requirement)
         registry.sync_from_state(task_id)
     else:
-        # 后台运行：在 Zellij Session 中启动 worker
+        # 后台运行
         _launch_worker_background(
             config, task_id, working_dir, requirement, args.config
         )
         print(f"任务 [{task_id}] 已启动")
         print(f"  查看进度: maestro status {task_id}")
-        print(f"  实时观看: zellij attach maestro-{task_id}")
         print(f"  发送反馈: maestro ask {task_id} \"消息\"")
         print(f"  终止任务: maestro abort {task_id}")
 
 
 def _handle_list(args):
     """处理 list 命令"""
+    _check_not_root()
     registry = TaskRegistry()
     tasks = registry.list_tasks()
     if not tasks:
         print("暂无任务")
         return
+
+    # 展示前同步活跃任务的 state.json
+    active_statuses = ("pending", "executing", "waiting_user")
+    for t in tasks:
+        if t.get("status") in active_statuses:
+            registry.sync_from_state(t["task_id"])
+    tasks = registry.list_tasks()  # 重新读取同步后的数据
 
     # 状态图标
     status_icons = {
@@ -270,20 +294,22 @@ def _handle_list(args):
         "runtime_error":     "[ER]",   # Error
     }
 
-    print(f"{'ID':>10}  {'状态':<12}  {'需求':<40}  {'创建时间':<20}")
-    print("-" * 90)
+    print(f"{'ID':>10}  {'状态':<12}  {'工具':<8}  {'需求':<35}  {'创建时间':<20}")
+    print("-" * 95)
     for t in tasks:
         status = t.get("status", "")
         icon = status_icons.get(status, "    ")
         if status == "failed":
             icon = fail_reason_icons.get(t.get("fail_reason", ""), icon)
-        req = t.get("requirement", "")[:38]
+        tool = t.get("coding_tool_type", "")[:7]
+        req = t.get("requirement", "")[:33]
         created = t.get("created_at", "")[:19]
-        print(f"{t['task_id']:>10}  {icon} {t.get('status', ''):9}  {req:<40}  {created}")
+        print(f"{t['task_id']:>10}  {icon} {t.get('status', ''):9}  {tool:<8}  {req:<35}  {created}")
 
 
 def _handle_status(args):
     """处理 status 命令"""
+    _check_not_root()
     state_path = (
         Path("~/.maestro/sessions").expanduser()
         / args.task_id / "state.json"
@@ -324,6 +350,7 @@ def _handle_status(args):
 
 def _handle_ask(args):
     """处理 ask 命令"""
+    _check_not_root()
     inbox_path = (
         Path("~/.maestro/sessions").expanduser()
         / args.task_id / "inbox.txt"
@@ -338,6 +365,7 @@ def _handle_ask(args):
 
 def _handle_chat(args):
     """处理 chat 命令"""
+    _check_not_root()
     config = load_config(args.config)
 
     # 读取任务状态
@@ -372,6 +400,7 @@ def _handle_chat(args):
 
 def _handle_abort(args):
     """处理 abort 命令"""
+    _check_not_root()
     session_dir = (
         Path("~/.maestro/sessions").expanduser() / args.task_id
     )
@@ -404,6 +433,7 @@ def _handle_abort(args):
 
 def _handle_resume(args):
     """处理 resume 命令"""
+    _check_not_root()
     config = load_config(args.config)
 
     session_dir = (
@@ -434,6 +464,7 @@ def _handle_resume(args):
 
 def _handle_report(args):
     """处理 report 命令"""
+    _check_not_root()
     report_path = (
         Path("~/.maestro/sessions").expanduser()
         / args.task_id / "report.md"
@@ -448,6 +479,7 @@ def _handle_report(args):
 
 def _handle_daemon(args):
     """处理 daemon 命令"""
+    _check_not_root()
     maestro_dir = Path("~/.maestro").expanduser()
     maestro_dir.mkdir(parents=True, exist_ok=True)
     pid_file = maestro_dir / "daemon.pid"
@@ -510,8 +542,37 @@ def _handle_daemon(args):
             pid_file.unlink()
 
 
+def _handle_switch(args):
+    """处理 switch 命令"""
+    _check_not_root()
+    config = load_config(args.config)
+    available = config.available_tools
+    current = config.coding_tools.active_tool
+
+    if not args.tool:
+        print(f"当前编码工具: {current}")
+        print(f"可用工具: {', '.join(available)}")
+        return
+
+    if args.tool not in available:
+        print(f"错误: 未找到 '{args.tool}'，可用: {', '.join(available)}")
+        sys.exit(1)
+
+    if args.tool == current:
+        print(f"当前已是 {args.tool}")
+        return
+
+    try:
+        save_active_tool(args.config, args.tool)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+    print(f"已切换: {current} → {args.tool}")
+
+
 def _handle_worker(args):
     """处理 _worker 内部命令"""
+    _check_not_root()
     config = load_config(args.config)
     setup_logging(config, args.task_id)
 
@@ -534,31 +595,13 @@ def _handle_worker(args):
 def _launch_worker_background(config: AppConfig, task_id: str,
                                working_dir: str, requirement: str,
                                config_path: str):
-    """在后台（Zellij Session）启动 worker"""
+    """在后台启动 worker"""
     cmd = [
         sys.executable, "-m", "maestro.cli",
         "_worker", task_id, working_dir, requirement,
         "-c", config_path,
     ]
 
-    if config.zellij.enabled:
-        # 通过 Zellij Session 启动
-        import shutil
-        zellij = shutil.which("zellij")
-        if zellij:
-            zellij_cmd = [
-                zellij, "--session", f"maestro-{task_id}",
-                "--", *cmd,
-            ]
-            subprocess.Popen(
-                zellij_cmd,
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return
-
-    # Fallback: 使用 nohup 启动
     log_dir = Path(config.logging.dir).expanduser() / "tasks" / task_id
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "worker.log"

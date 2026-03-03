@@ -1,9 +1,7 @@
 ---
 name: f-context
 description: 上下文管理：保存、加载、查看、清理跨对话的长期任务上下文。当用户说"保存上下文"、"加载上下文"、"查看上下文"、"清理对话记录"时使用。
-tools: [Read, Write, Edit, Grep, Glob, Bash]
-context: fork
-version: 2.0.0
+version: 2.1.0
 ---
 
 # 上下文管理 Skill
@@ -79,7 +77,7 @@ bash .claude/scripts/context.sh save-prepare --name="<名称>"
 
 ### 步骤 2：分析对话要点（LLM 任务，不可替代）
 
-分析本次对话的要点：
+本 Skill 在主对话中运行，可以直接看到完整的对话上下文。无需用户复述，直接从对话中提取要点：
 - 完成了什么
 - 做了什么决策
 - 涉及哪些关键文件

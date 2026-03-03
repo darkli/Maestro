@@ -77,13 +77,9 @@ count_dir_files() {
 # 用法: get_dir_last_modified "/path/to/dir"
 get_dir_last_modified() {
   local dir="$1"
-  # 查找目录内最新修改的文件
-  local newest=""
-  local found_files
-  found_files=$(find "$dir" -type f 2>/dev/null || true)
-  if [ -n "$found_files" ]; then
-    newest=$(echo "$found_files" | xargs ls -t 2>/dev/null | head -1 || true)
-  fi
+  # 查找目录内最新修改的文件（-print0 + xargs -0 安全处理含空格的文件名）
+  local newest
+  newest=$(find "$dir" -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)
   if [ -n "$newest" ]; then
     portable_stat_mtime "$newest"
   else

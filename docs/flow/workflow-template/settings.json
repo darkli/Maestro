@@ -14,16 +14,6 @@
         ]
       },
       {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/lint-check.sh",
-            "timeout": 60
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -53,16 +43,6 @@
             "command": ".claude/hooks/run-related-tests.sh",
             "async": true,
             "timeout": 300
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/check-coverage.sh",
-            "timeout": 30
           }
         ]
       }

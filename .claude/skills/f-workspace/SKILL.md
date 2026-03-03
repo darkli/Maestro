@@ -1,9 +1,7 @@
 ---
 name: f-workspace
 description: Workspace 管理：查看和清理工作流产物目录。当用户说"查看 workspace"、"清理 workspace"、"workspace 列表"时使用。
-tools: [Read, Grep, Glob, Bash]
-context: fork
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Workspace 管理 Skill

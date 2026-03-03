@@ -1085,6 +1085,7 @@ def _create_orchestrator(config, session_dir):
     orch.session_dir = session_dir
     orch.breaker = MagicMock()
     orch.breaker.total_cost = 0.0
+    orch.breaker.max_budget_usd = 5.0
     orch.manager = MagicMock()
     orch.manager.total_cost = 0.0
     return orch

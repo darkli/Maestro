@@ -30,8 +30,7 @@ DELETE_TARGETS=".claude/skills/|dir|skills
 # 保留目标：不会被删除的路径
 # 格式: "路径|描述"
 # ============================================================
-PRESERVE_TARGETS=".claude/skills/f-init/|工作流安装入口（保留以便重装）
-.claude/context/|跨对话上下文数据
+PRESERVE_TARGETS=".claude/context/|跨对话上下文数据
 .claude/workspace/|Workspace 工作目录
 .claude/settings.local.json|本地个性化配置
 .claude/scripts/|脚本工具（clean.sh 等）"
@@ -42,7 +41,7 @@ PRESERVE_TARGETS=".claude/skills/f-init/|工作流安装入口（保留以便重
 
 # 统计目录中指定文件类型的数量，生成描述字符串
 # 用法: count_dir_content ".claude/skills/" "dir"
-# 返回: "12 个 Skill" / "10 个 Agent" / "8 个 Hook" / 目录或文件计数
+# 返回: "10 个 Skill" / "6 个 Hook" / 目录或文件计数
 count_dir_content() {
   local rel_path="$1"
   local item_type="$2"

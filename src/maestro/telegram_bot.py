@@ -22,7 +22,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from maestro.config import load_config, AppConfig
+from maestro.config import load_config, save_active_tool, AppConfig
 from maestro.registry import TaskRegistry
 from maestro.state import read_json_safe
 from maestro.orchestrator import _write_inbox
@@ -104,6 +104,7 @@ class TelegramDaemon:
         app.add_handler(CommandHandler("new", self._on_new))
         app.add_handler(CommandHandler("focus", self._on_focus))
         app.add_handler(CommandHandler("cd", self._on_cd))
+        app.add_handler(CommandHandler("switch", self._on_switch))
 
         # 普通消息处理（用于直接回复路由）
         app.add_handler(MessageHandler(
@@ -158,6 +159,7 @@ class TelegramDaemon:
             "/cd <路径> - 设置工作目录\n"
             "/run <需求> - 启动任务（需先 /cd）\n"
             "/list - 查看任务列表\n"
+            "/switch [工具名] - 查看/切换编码工具\n"
             "/focus [id] - 查看/切换关注任务\n"
             "/focus off - 取消关注\n\n"
             "以下命令省略 id 时默认用 focus 的任务:\n"
@@ -259,8 +261,10 @@ class TelegramDaemon:
             icon = status_icons.get(status, "❓")
             if status == "failed":
                 icon = fail_reason_icons.get(t.get("fail_reason", ""), icon)
+            tool = t.get("coding_tool_type", "")
+            tool_tag = f"[{tool}]" if tool else ""
             req = t.get("requirement", "")[:30]
-            lines.append(f"{icon} [{t['task_id']}] {req}")
+            lines.append(f"{icon} [{t['task_id']}] {tool_tag} {req}")
 
         await update.message.reply_text("\n".join(lines))
 
@@ -281,11 +285,22 @@ class TelegramDaemon:
             await update.message.reply_text(f"任务 {task_id} 不存在")
             return
 
+        # 构建状态显示（含 sub_status 子状态）
+        status_display = state.get("status", "未知")
+        sub_status = state.get("sub_status", "")
+        if sub_status:
+            sub_labels = {
+                "tool_running": "编码工具运行中",
+                "manager_thinking": "Manager 思考中",
+            }
+            status_display += f" → {sub_labels.get(sub_status, sub_status)}"
+
         msg = (
             f"[{task_id}] {state.get('requirement', '')[:40]}\n\n"
-            f"状态: {state.get('status', '未知')}\n"
+            f"状态: {status_display}\n"
             f"进度: Turn {state.get('current_turn', 0)}/{state.get('max_turns', 0)}\n"
             f"费用: ${state.get('total_cost_usd', 0):.2f}\n"
+            f"工具: {state.get('coding_tool_type', '未知')}\n"
             f"目录: {state.get('working_dir', '')}\n"
         )
 
@@ -515,6 +530,46 @@ class TelegramDaemon:
 
         self._default_working_dir = real_path
         await update.message.reply_text(f"默认工作目录已设置: {real_path}")
+
+    async def _on_switch(self, update, context):
+        """处理 /switch 命令：查看/切换编码工具"""
+        if not self._check_auth(update.effective_chat.id):
+            await update.message.reply_text("未授权")
+            return
+
+        available = self.config.available_tools
+        current = self.config.coding_tools.active_tool
+        args = context.args
+
+        if not args:
+            await update.message.reply_text(
+                f"当前编码工具: {current}\n"
+                f"可用工具: {', '.join(available)}\n\n"
+                f"切换: /switch <工具名>"
+            )
+            return
+
+        tool_name = args[0]
+        if tool_name not in available:
+            await update.message.reply_text(
+                f"未找到 '{tool_name}'，可用: {', '.join(available)}"
+            )
+            return
+
+        if tool_name == current:
+            await update.message.reply_text(f"当前已是 {tool_name}")
+            return
+
+        try:
+            save_active_tool(self._config_path, tool_name)
+            new_config = load_config(self._config_path)
+            self.config = new_config  # 加载成功后再替换
+            await update.message.reply_text(
+                f"已切换: {current} → {tool_name}\n"
+                f"注意：切换只对新启动的任务生效，运行中的任务不受影响"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"切换失败: {e}")
 
     async def _on_focus(self, update, context):
         """处理 /focus 命令：查看/切换/取消关注任务"""
@@ -784,11 +839,20 @@ class TelegramDaemon:
                 f"恢复: maestro resume {task_id}"
             )
         elif new == "waiting_user":
-            msg = (
-                f"✋ [{task_id}] 需要你的回复\n"
-                f"Manager 思路: {state.get('last_manager_reasoning', '')[:200]}\n\n"
-                f"回复: /ask {task_id} <你的回复>"
-            )
+            question = state.get("last_question", "")
+            reasoning = state.get("last_manager_reasoning", "")
+            if question:
+                msg = f"✋ [{task_id}] 需要你的回复\n问题: {question[:300]}\n"
+                if reasoning and reasoning != question:
+                    msg += f"原因: {reasoning[:200]}\n"
+                msg += f"\n回复: /ask {task_id} <你的回复>"
+            else:
+                # fallback
+                msg = (
+                    f"✋ [{task_id}] 需要你的回复\n"
+                    f"Manager 思路: {reasoning[:200]}\n\n"
+                    f"回复: /ask {task_id} <你的回复>"
+                )
         elif new == "aborted":
             msg = f"🛑 [{task_id}] 任务已终止"
         else:
@@ -1036,12 +1100,7 @@ class TelegramDaemon:
 
     def _launch_worker(self, task_id: str, working_dir: str,
                        requirement: str):
-        """启动 worker 进程
-
-        Daemon 以 nohup 方式后台运行，没有 TTY，Zellij 无法启动。
-        因此 Daemon 始终使用直接 subprocess 模式，日志写入文件。
-        用户仍可通过 CLI 的 maestro run（有 TTY）获得 Zellij UI。
-        """
+        """启动 worker 进程"""
         cmd = [
             sys.executable, "-m", "maestro.cli",
             "_worker", task_id, working_dir, requirement,

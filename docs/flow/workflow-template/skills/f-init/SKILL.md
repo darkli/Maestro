@@ -1,9 +1,7 @@
 ---
 name: f-init
-description: 工作流初始化与升级：根据 CLAUDE.md 自动生成项目定制化的 Skills、Agents 和 Hooks。支持 `-u` 升级模式。当用户说"初始化工作流"、"安装开发流程"、"升级工作流"时使用。
-tools: [Read, Bash, Glob]
-context: fork
-version: 6.0.0
+description: 工作流初始化与升级：根据 CLAUDE.md 自动生成项目定制化的 Skills 和 Hooks。支持 `-u` 升级模式。当用户说"初始化工作流"、"安装开发流程"、"升级工作流"时使用。
+version: 6.1.0
 ---
 
 # 工作流初始化 Skill
@@ -60,8 +58,8 @@ bash docs/flow/workflow-template/scripts/init.sh --verbose
 | `$STATE_MANAGEMENT` | Glob `src/contexts/` 或 `src/store/`，列出 Context/Store 名称及用途 |
 | `$BACKEND_LAYERS` | 读 backend/src/ 目录结构，总结分层（Routes → Services → Database） |
 | `$KEY_SERVICE_FILES` | Glob `services/*.ts` 或 `src/services/*.ts`，列出文件名及一句话用途 |
-| `$AGENT_VERSION_FILE` | Glob `agent/**/version*`，取路径 |
-| `$AGENT_BUILD_COMMAND` | 读 agent 目录的 Makefile 或 go.mod，推断编译命令 |
+| `$AGENT_VERSION_FILE` | Glob `agent/**/version*`，取路径（仅当 cross-compile=true 时适用） |
+| `$AGENT_BUILD_COMMAND` | 读 agent 目录的 Makefile 或 go.mod，推断编译命令（仅当 cross-compile=true 时适用） |
 
 3. 替换完成后输出："已自动补全 N 个 TODO，建议快速检查准确性"
 

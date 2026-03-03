@@ -39,9 +39,6 @@ maestro run -f "your requirement here"
 # 覆盖 provider/model
 maestro run --provider ollama --model qwen2.5:14b "your requirement"
 
-# 不使用 Zellij UI
-maestro run --no-zellij "your requirement"
-
 # 查看任务列表
 maestro list
 
@@ -108,7 +105,7 @@ pytest tests/ -v
 
 ## Architecture
 
-系统由 10 个模块组成，核心闭环：CLI → Orchestrator → ToolRunner + ManagerAgent → 循环直到完成。
+系统由 9 个模块组成，核心闭环：CLI → Orchestrator → ToolRunner + ManagerAgent → 循环直到完成。
 
 ### 核心模块
 
@@ -126,7 +123,6 @@ pytest tests/ -v
 |------|------|------|
 | State | `state.py` | 状态机（6 态）+ 熔断器 + atomic_write_json 工具 |
 | Context | `context.py` | 上下文压缩（滑动窗口）+ 输出截断 |
-| Session | `session.py` | Zellij 管理（KDL 布局 + 自动安装 + fallback） |
 | Registry | `registry.py` | 多任务注册表（CRUD + 并发数检查） |
 | TelegramBot | `telegram_bot.py` | Telegram Bot + Daemon（asyncio，含 /chat LLM 调用） |
 
@@ -150,7 +146,6 @@ Maestro/
 │   ├── manager_agent.py      # 含 PromptLoader 类（prompt 热加载）
 │   ├── state.py
 │   ├── context.py
-│   ├── session.py
 │   ├── registry.py
 │   └── telegram_bot.py
 ├── tests/                    # pytest 测试
@@ -163,7 +158,6 @@ Maestro/
 - **JSON action 协议**: Manager 必须以 JSON 回复决策（action: execute/done/blocked/ask_user/retry），含 fallback 到纯文本模式
 - **编码工具可插拔**: `tool_runner.py` 支持 claude 和 generic 两种模式，可适配 Gemini CLI、Aider 等
 - **文件 IPC**: inbox.txt（用户反馈）+ abort 信号文件 + state.json（状态共享）
-- **Zellij 进程保活**: 任务在 Zellij Session 中运行，SSH 断开后不中断
 - **nohup + PID 文件**: Daemon 管理使用最简方案，不依赖 systemd
 - **Prompt 外置化**: System prompt、chat prompt 等抽取到 `prompts/` 目录的 Markdown 文件中，通过 `PromptLoader` 的 mtime 缓存实现热加载，修改后无需重启服务。不引入模板引擎，保持纯文本简洁性
 - **deploy.sh 分层部署**: 支持 `deploy.sh init`（首次完整部署）和 `deploy.sh update`（仅代码+包增量更新）两种 CLI 参数模式，同时保留交互菜单。`update` 模式自动备份/恢复远端 `prompts/` 目录防止用户自定义被覆盖
@@ -172,7 +166,7 @@ Maestro/
 
 配置文件加载顺序：`config.yaml`（当前目录）→ `~/.maestro/config.yaml` → 默认值。
 
-7 个配置段：`manager`、`coding_tool`、`context`、`safety`、`telegram`、`zellij`、`logging`。
+6 个配置段：`manager`、`coding_tool`、`context`、`safety`、`telegram`、`logging`。
 
 环境变量通过 `${VAR_NAME}` 语法展开。详见 `config.example.yaml`。
 

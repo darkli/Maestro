@@ -22,3 +22,9 @@ Thumbs.db
 
 # doc report
 docs/reports/
+
+# 授权备份（含敏感凭证）
+deploy/
+
+.claude/_backup/
+.claude/workspace/

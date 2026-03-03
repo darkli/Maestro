@@ -1145,7 +1145,7 @@ process_template() {
 # ============================================================
 create_directories() {
   info "创建目录结构..."
-  local dirs="skills agents hooks scripts workspace context"
+  local dirs="skills hooks scripts workspace context"
   for d in $dirs; do
     if [ "$DRY_RUN" = true ]; then
       verbose "[DRY-RUN] mkdir -p $TARGET_DIR/$d"
@@ -1155,7 +1155,7 @@ create_directories() {
   done
 
   # Create skill subdirectories
-  for skill in f-product f-dev f-quick-dev f-light-dev f-bugfix f-design \
+  for skill in f-product f-dev f-bugfix f-design \
                f-test f-context f-workspace f-clean f-doc f-init; do
     if [ "$DRY_RUN" = true ]; then
       verbose "[DRY-RUN] mkdir -p $TARGET_DIR/skills/$skill"
@@ -1166,47 +1166,10 @@ create_directories() {
 }
 
 install_skills() {
-  info "安装 Skills（12 个）..."
+  info "安装 Skills（10 个）..."
 
-  # Skills that need two-pass processing (have IF/PS markers)
-  local process_skills="f-dev f-light-dev f-bugfix f-product f-test"
-  for skill in $process_skills; do
-    local src="$TEMPLATE_DIR/skills/$skill/SKILL.md"
-    local dst="$TARGET_DIR/skills/$skill/SKILL.md"
-    if [ ! -f "$src" ]; then
-      warn "模板不存在: $src"
-      continue
-    fi
-    if [ "$DRY_RUN" = true ]; then
-      info "[DRY-RUN] 处理 $skill"
-    else
-      process_template "$src" "$dst"
-      INSTALLED_FILES=$((INSTALLED_FILES + 1))
-    fi
-  done
-
-  # f-quick-dev: generated from f-dev template with QUICK_MODE=true
-  local fdev_src="$TEMPLATE_DIR/skills/f-dev/SKILL.md"
-  local fquick_dst="$TARGET_DIR/skills/f-quick-dev/SKILL.md"
-  if [ -f "$fdev_src" ]; then
-    if [ "$DRY_RUN" = true ]; then
-      info "[DRY-RUN] 从 f-dev 模板生成 f-quick-dev"
-    else
-      local saved_caps="$CAPS_STRING"
-      if [ -n "$CAPS_STRING" ]; then
-        CAPS_STRING="${CAPS_STRING},QUICK_MODE=true"
-      else
-        CAPS_STRING="QUICK_MODE=true"
-      fi
-      process_template "$fdev_src" "$fquick_dst"
-      CAPS_STRING="$saved_caps"
-      INSTALLED_FILES=$((INSTALLED_FILES + 1))
-      verbose "从 f-dev 模板生成 f-quick-dev（QUICK_MODE=true）"
-    fi
-  fi
-
-  # Skills that are direct copy (no IF/PS markers)
-  local copy_skills="f-init f-context f-workspace f-clean f-doc f-design"
+  # Skills that are direct copy
+  local copy_skills="f-dev f-bugfix f-design f-product f-test f-doc f-init f-context f-workspace f-clean"
   for skill in $copy_skills; do
     local src="$TEMPLATE_DIR/skills/$skill/SKILL.md"
     local dst="$TARGET_DIR/skills/$skill/SKILL.md"
@@ -1223,46 +1186,8 @@ install_skills() {
   done
 }
 
-install_agents() {
-  info "安装 Agents（10 个）..."
-
-  # Agents that need two-pass processing
-  local process_agents="code-engineer code-reviewer integration-validator test-engineer documentation-writer product-designer system-designer"
-  for agent in $process_agents; do
-    local src="$TEMPLATE_DIR/agents/$agent.md"
-    local dst="$TARGET_DIR/agents/$agent.md"
-    if [ ! -f "$src" ]; then
-      warn "Agent 模板不存在: $src"
-      continue
-    fi
-    if [ "$DRY_RUN" = true ]; then
-      info "[DRY-RUN] 处理 Agent $agent"
-    else
-      process_template "$src" "$dst"
-      INSTALLED_FILES=$((INSTALLED_FILES + 1))
-    fi
-  done
-
-  # Agents that are direct copy
-  local copy_agents="requirements-analyst doc-reviewer doc-consistency-checker"
-  for agent in $copy_agents; do
-    local src="$TEMPLATE_DIR/agents/$agent.md"
-    local dst="$TARGET_DIR/agents/$agent.md"
-    if [ ! -f "$src" ]; then
-      warn "Agent 模板不存在: $src"
-      continue
-    fi
-    if [ "$DRY_RUN" = true ]; then
-      info "[DRY-RUN] 复制 Agent $agent"
-    else
-      cp "$src" "$dst"
-      INSTALLED_FILES=$((INSTALLED_FILES + 1))
-    fi
-  done
-}
-
 install_hooks() {
-  info "安装 Hooks（8 个）..."
+  info "安装 Hooks（6 个）..."
 
   # Copy all hook scripts
   for src in "$TEMPLATE_DIR/hooks/"*.sh; do
@@ -1376,21 +1301,16 @@ validate_all() {
   local errors=0
 
   # File counts
-  local skill_count agent_count hook_count
+  local skill_count hook_count
   skill_count=$(find "$TARGET_DIR/skills" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
-  agent_count=$(find "$TARGET_DIR/agents" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
   hook_count=$(find "$TARGET_DIR/hooks" -name "*.sh" 2>/dev/null | wc -l | tr -d ' ')
 
-  if [ "$skill_count" -ne 12 ]; then
-    error "Skills 数量 $skill_count != 12"
+  if [ "$skill_count" -ne 10 ]; then
+    error "Skills 数量 $skill_count != 10"
     errors=$((errors + 1))
   fi
-  if [ "$agent_count" -ne 10 ]; then
-    error "Agents 数量 $agent_count != 10"
-    errors=$((errors + 1))
-  fi
-  if [ "$hook_count" -ne 8 ]; then
-    error "Hooks 数量 $hook_count != 8"
+  if [ "$hook_count" -ne 6 ]; then
+    error "Hooks 数量 $hook_count != 6"
     errors=$((errors + 1))
   fi
   if [ ! -f "$TARGET_DIR/settings.json" ]; then
@@ -1400,7 +1320,7 @@ validate_all() {
 
   # Residual markers (exclude f-init which has IF markers in documentation text)
   local residual_if
-  residual_if=$(grep -rl '<!-- IF:' "$TARGET_DIR/skills/" "$TARGET_DIR/agents/" 2>/dev/null | grep -v 'f-init' | wc -l | tr -d ' ') || true
+  residual_if=$(grep -rl '<!-- IF:' "$TARGET_DIR/skills/" 2>/dev/null | grep -v 'f-init' | wc -l | tr -d ' ') || true
 
   if [ "${residual_if:-0}" -gt 0 ]; then
     error "发现 $residual_if 个文件含有残留 IF 标记"
@@ -1422,7 +1342,7 @@ validate_all() {
     script_count=$(find "$TARGET_DIR/scripts" \( -name "*.sh" -o -name "*.awk" \) 2>/dev/null | wc -l | tr -d ' ')
     verbose "Scripts 数量: $script_count"
     # Verify key scripts exist
-    for key_script in common.sh context.sh workspace.sh clean.sh dev-init.sh; do
+    for key_script in common.sh context.sh workspace.sh clean.sh; do
       if [ -f "$TEMPLATE_DIR/scripts/$key_script" ] && [ ! -f "$TARGET_DIR/scripts/$key_script" ]; then
         warn "脚本未安装: $key_script"
       fi
@@ -1473,9 +1393,8 @@ output_report() {
   echo ""
   echo "--- 安装统计 ---"
   echo "  已安装文件: $INSTALLED_FILES"
-  echo "  Skills:     12 (处理 6 + 复制 6)"
-  echo "  Agents:     10 (处理 7 + 复制 3)"
-  echo "  Hooks:       8 (含配置填充)"
+  echo "  Skills:     10 (直接复制)"
+  echo "  Hooks:       6 (含配置填充)"
   echo "  Scripts:     $INSTALLED_SCRIPTS"
   echo "  Settings:    1"
   echo ""
@@ -1506,7 +1425,7 @@ output_report() {
 
   # Inline PS count (items kept as template defaults)
   local ps_inline
-  ps_inline=$(grep -rc '<!-- PROJECT-SPECIFIC:' "$TARGET_DIR/skills/" "$TARGET_DIR/agents/" 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
+  ps_inline=$(grep -rc '<!-- PROJECT-SPECIFIC:' "$TARGET_DIR/skills/" 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
   if [ "$ps_inline" -gt 0 ]; then
     echo "--- 内联 PS 标记 ---"
     echo "  $ps_inline 个 PROJECT-SPECIFIC 标记保留为模板默认值"
@@ -1533,8 +1452,8 @@ upgrade_mode() {
     info "[DRY-RUN] 将备份到 $backup_dir"
   else
     mkdir -p "$backup_dir"
-    # Backup existing files
-    for dir in skills agents hooks scripts; do
+    # Backup existing files (include agents for legacy rollback support)
+    for dir in skills hooks scripts agents; do
       if [ -d "$TARGET_DIR/$dir" ]; then
         cp -r "$TARGET_DIR/$dir" "$backup_dir/$dir" 2>/dev/null || true
       fi
@@ -1543,24 +1462,41 @@ upgrade_mode() {
     info "已备份到 $backup_dir"
   fi
 
-  # U3: Re-install (reuse init functions)
+  # U3: Clean managed directories (remove deprecated files before re-install)
+  if [ "$DRY_RUN" = true ]; then
+    info "[DRY-RUN] 清理受管目录: skills, hooks, scripts（遗留 agents 目录如存在将单独清理）"
+  else
+    # Remove managed content (workspace/context are user data, never touched)
+    for dir in skills hooks scripts; do
+      if [ -d "$TARGET_DIR/$dir" ]; then
+        rm -rf "$TARGET_DIR/$dir"
+        verbose "已清理: $TARGET_DIR/$dir"
+      fi
+    done
+    # Clean legacy agents directory if it exists (agents removed since v2.0.0)
+    if [ -d "$TARGET_DIR/agents" ]; then
+      info "清理遗留 agents 目录（已由 Claude Code 内置 agent 类型替代）"
+      rm -rf "$TARGET_DIR/agents"
+    fi
+  fi
+
+  # U4: Re-install from template
   create_directories
   install_skills
-  install_agents
   install_hooks
   install_scripts
   install_settings
 
-  # U4: Validate
+  # U5: Validate
   if [ "$DRY_RUN" != true ]; then
     validate_all || true
   fi
 
-  # U5: Generate diff summary
+  # U6: Generate diff summary
   if [ "$DRY_RUN" != true ] && [ -d "$backup_dir" ]; then
     info "变更摘要:"
     local changed=0
-    for dir in skills agents hooks scripts; do
+    for dir in skills hooks scripts; do
       if [ -d "$backup_dir/$dir" ]; then
         while IFS= read -r old_file; do
           local rel_path="${old_file#$backup_dir/}"
@@ -1615,7 +1551,6 @@ main() {
   else
     create_directories
     install_skills
-    install_agents
     install_hooks
     install_scripts
     install_settings
