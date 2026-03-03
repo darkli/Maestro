@@ -1302,7 +1302,7 @@ do_clean() {
     echo "  以下内容保留："
     KEEP_LIST=""
     [[ "$HAD_NODEJS" == "true" ]] && KEEP_LIST="${KEEP_LIST}Node.js、"
-    KEEP_LIST="${KEEP_LIST}Python（系统级）、~/.claude（认证数据）、~/.codex（认证数据）"
+    KEEP_LIST="${KEEP_LIST}Python（系统级）"
     echo "    - ${KEEP_LIST}"
     echo ""
     echo -e "${RED}  此操作不可恢复！${NC}"
@@ -1493,18 +1493,15 @@ ${CLEAN_SCRIPT}" | run_ssh_pipe bash
 
     # 工具卸载摘要（跟随 CODING_TOOLS 配置）
     TOOL_SUMMARY=""
-    AUTH_KEPT=""
     IFS=',' read -ra TOOL_LIST_SUMMARY <<< "$CODING_TOOLS"
     for tool in "${TOOL_LIST_SUMMARY[@]}"; do
         tool=$(echo "$tool" | xargs)
         case "$tool" in
             claude)
                 [[ "$UNINSTALL_CLAUDE" == "true" ]] && TOOL_SUMMARY="${TOOL_SUMMARY}Claude Code（已卸载）、" || TOOL_SUMMARY="${TOOL_SUMMARY}Claude Code（已保留）、"
-                AUTH_KEPT="${AUTH_KEPT}~/.claude、"
                 ;;
             codex)
                 [[ "$UNINSTALL_CODEX" == "true" ]] && TOOL_SUMMARY="${TOOL_SUMMARY}Codex CLI（已卸载）、" || TOOL_SUMMARY="${TOOL_SUMMARY}Codex CLI（已保留）、"
-                AUTH_KEPT="${AUTH_KEPT}~/.codex、"
                 ;;
         esac
     done
@@ -1528,9 +1525,7 @@ ${CLEAN_SCRIPT}" | run_ssh_pipe bash
         TOOL_SUMMARY="${TOOL_SUMMARY}Node.js（已保留）、"
     fi
     TOOL_SUMMARY="${TOOL_SUMMARY%、}"
-    AUTH_KEPT="${AUTH_KEPT%、}"
     echo "  工具处理: ${TOOL_SUMMARY}"
-    [[ -n "$AUTH_KEPT" ]] && echo "  认证数据: ${AUTH_KEPT} 已保留（不受卸载影响）"
     echo ""
     echo "  如需重新部署，再次运行此脚本选择「部署」即可。"
     echo ""

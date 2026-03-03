@@ -36,7 +36,7 @@ bash deploy.sh
 `init` 执行完整的部署流程：
 1. 传输项目文件到 VPS（Phase 1）
 2. 远程安装系统包、Python、Node.js、Claude Code、Zellij、venv、配置文件、systemd 服务（Phase 2）
-3. Claude Code 认证引导
+3. 编码工具认证引导（Claude Code / Codex CLI 由用户手动登录）
 
 #### 2. 业务逻辑更新（增量更新）
 
