@@ -1,6 +1,6 @@
 ---
 name: f-clean
-description: 工作流清理：删除所有已安装的 Skills、Hooks 和配置文件，保留 f-init 和用户数据，为重新初始化做准备。当用户说"清理工作流"、"重置工作流"、"删除工作流文件"时使用。
+description: 工作流清理：删除所有已安装的 Skills、Hooks 和配置文件，保留用户数据（context、workspace），为重新初始化做准备。当用户说"清理工作流"、"重置工作流"、"删除工作流文件"时使用。
 version: 2.1.0
 ---
 
@@ -8,9 +8,9 @@ version: 2.1.0
 
 ## 概述
 
-本 Skill 清理所有已安装的工作流文件（Skills、Hooks、Scripts、settings.json），保留 f-init 初始化工具和用户数据（context、workspace），为重新执行 `/f-init` 做准备。
+本 Skill 清理所有已安装的工作流文件（Skills、Hooks、Scripts、settings.json），保留用户数据（context、workspace），为重新执行 `/f-init` 做准备。
 
-**注意**：f-clean 运行时会删除 `.claude/skills/`（包括自身），这是预期行为。下次 `/f-init` 会重新安装它。
+**注意**：f-clean 运行时会删除整个 `.claude/skills/` 目录（包括自身和 f-init），这是预期行为。清理后需通过 `bash docs/flow/workflow-template/scripts/init.sh` 或新对话中 `/f-init` 重新安装。
 
 ## 前置检查
 

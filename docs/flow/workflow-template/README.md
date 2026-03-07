@@ -1,6 +1,6 @@
 # 工作流模板 — 安装与使用指南
 
-本模板为 Claude Code 项目提供 **AI 辅助开发工作流**，包含 10 个 Skill 命令，覆盖从产品设计到功能交付的全流程。每个 Skill 是一份流程指引——定义阶段、质量门禁和确认点，由 Claude 在主对话中直接执行，充分利用 Claude Code 的原生能力和对话上下文连续性。
+本模板为 Claude Code 项目提供 **AI 辅助开发工作流**，包含 12 个 Skill 命令，覆盖从产品设计到功能交付的全流程。每个 Skill 是一份流程指引——定义阶段、质量门禁和确认点，由 Claude 在主对话中直接执行，充分利用 Claude Code 的原生能力和对话上下文连续性。
 
 ---
 
@@ -73,13 +73,17 @@ workflow-template/
 │   ├── f-context/
 │   │   └── SKILL.md                   # 跨对话上下文管理（save/load/list/remove/clean）
 │   ├── f-test/
-│   │   └── SKILL.md                   # 独立测试（run/cover/write）
+│   │   └── SKILL.md                   # 智能测试（分析变更→评估→补充→运行→覆盖率）
 │   ├── f-workspace/
 │   │   └── SKILL.md                   # Workspace 目录查看与清理（list/clean）
 │   ├── f-clean/
 │   │   └── SKILL.md                   # 工作流清理（删除已安装文件，保留用户数据）
 │   ├── f-doc/
 │   │   └── SKILL.md                   # 文档与模板开发（3 阶段，含一致性检查）
+│   ├── f-analyze/
+│   │   └── SKILL.md                   # 深度问题分析（3 阶段，含 worktree 实验验证）
+│   ├── f-revise/
+│   │   └── SKILL.md                   # Review 反馈研判与修订（2 阶段）
 │   └── f-init/
 │       └── SKILL.md                   # 工作流初始化（安装脚本）
 │
@@ -116,11 +120,13 @@ workflow-template/
 | `/f-dev` | 功能开发，需求到交付 | 3 阶段 | 2 次 |
 | `/f-bugfix` | Bug 修复、调试、异常排查 | 3 阶段 | 2 次 |
 | `/f-design` | 前期规划、技术选型、可行性分析 | 2 阶段 | 2 次 |
-| `/f-test` | 独立测试（运行/覆盖率/补充测试） | — | 按需 |
+| `/f-test` | 智能测试（分析变更→评估→补充→运行→覆盖率） | 4 阶段 | 2 次 |
 | `/f-context` | 跨对话上下文管理（save/load/list/remove/clean） | — | — |
 | `/f-workspace` | Workspace 目录查看与清理（list/clean） | — | 按需 |
 | `/f-clean` | 工作流清理，删除已安装文件，保留用户数据 | — | 1 次 |
 | `/f-doc` | 文档/模板/prompt 编写与修改 | 3 阶段 | 2 次 |
+| `/f-analyze` | 深度问题分析（追踪根因、实验验证） | 3 阶段 | 1 次 |
+| `/f-revise` | Review 反馈研判与修订 | 2 阶段 | 1 次 |
 
 > `/f-init` 是安装脚本本身，不在上表中。安装完成后通过 `/f-init -u` 升级已有工作流。
 
@@ -139,9 +145,8 @@ workflow-template/
 # 只做方案设计
 /f-design 评估将前端状态管理从 Context 迁移到 Zustand 的方案
 
-# 运行测试
-/f-test run                      # 全量测试
-/f-test run frontend             # 前端测试
+# 运行测试（自动分析变更、评估并补充测试）
+/f-test
 
 # 保存当前对话上下文
 /f-context save my-task-name
@@ -162,6 +167,8 @@ workflow-template/
 查看/清理 workspace 目录      → /f-workspace
 重置工作流、全新安装          → /f-clean
 文档/模板/工作流文件修改      → /f-doc
+深度排查问题根因              → /f-analyze
+收到 review 反馈需要处理      → /f-revise
 上次中断的任务                → 继续做
 ```
 
@@ -183,8 +190,8 @@ Skill 只叠加 Claude 原生不具备的：阶段定义、确认点、质量门
 
 以下名称是**系统固定标识符**，在任何项目中都**不可修改**：
 
-- **Skill 命令名**：`f-product`、`f-dev`、`f-bugfix`、`f-design`、`f-test`、`f-context`、`f-workspace`、`f-doc`、`f-clean`、`f-init` — 目录名和 SKILL.md 中的 `name:` 字段必须完全一致
-- **Workspace 目录前缀**：`feature-`、`bugfix-`、`design-`、`product-`、`doc-` — Skill 通过前缀识别类型
+- **Skill 命令名**：`f-product`、`f-dev`、`f-bugfix`、`f-design`、`f-test`、`f-context`、`f-workspace`、`f-doc`、`f-clean`、`f-init`、`f-analyze`、`f-revise` — 目录名和 SKILL.md 中的 `name:` 字段必须完全一致
+- **Workspace 目录前缀**：`feature-`、`bugfix-`、`design-`、`product-`、`doc-`、`analyze-` — Skill 通过前缀识别类型
 
 ---
 
@@ -257,6 +264,10 @@ npm test
 **Q: 什么时候用 /f-design 而不是 /f-dev？**
 
 如果你还不确定是否要做这个功能，或者功能很复杂需要先看方案再决定，用 `/f-design`。`/f-design` 只产出文档不写代码，完成后可以直接衔接 `/f-dev`。
+
+**Q: 什么时候用 /f-analyze 而不是 /f-bugfix？**
+
+如果你想先搞清楚问题的根因和完整机制，还不急着改代码，用 `/f-analyze`。它全程不动代码，只输出分析文档。分析完后可以衔接 `/f-bugfix` 进行修复。如果你已经大致知道问题在哪、想直接修复，用 `/f-bugfix`。
 
 **Q: /f-doc 和直接修改文件有什么区别？**
 

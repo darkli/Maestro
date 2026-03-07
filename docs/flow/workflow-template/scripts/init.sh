@@ -63,6 +63,8 @@ TEST_CMD_PATTERNS=""
 COVERAGE_FILE=""
 COVERAGE_FORMAT="json"
 COVERAGE_THRESHOLD=80
+DET_AGENT_VERSION_FILE=""
+DET_AGENT_BUILD_CMD=""
 
 # ============================================================
 # Cleanup
@@ -225,7 +227,7 @@ detect_project() {
   [ -d "$PROJECT_ROOT/locales" ] && DET_LOCALE_DIR="locales/"
   [ -d "$PROJECT_ROOT/i18n" ] && DET_LOCALE_DIR="i18n/"
   if [ -n "$DET_LOCALE_DIR" ]; then
-    DET_LOCALE_LIST=$(find "$PROJECT_ROOT/${DET_LOCALE_DIR%/}" -maxdepth 1 -type f -exec basename {} \; 2>/dev/null | sort | paste -sd', ' -)
+    DET_LOCALE_LIST=$(find "$PROJECT_ROOT/${DET_LOCALE_DIR%/}" -maxdepth 1 -type f -exec basename {} \; 2>/dev/null | sort | awk 'NR>1{printf ", "} {printf "%s", $0} END{if(NR>0) print ""}')
   fi
 
   # Design system config file
@@ -298,6 +300,9 @@ detect_node_project() {
   grep -q '"pg"' "$pkg" 2>/dev/null            && CAP_database="postgresql" || true
   grep -q '"mongoose"' "$pkg" 2>/dev/null      && CAP_database="mongodb" || true
   grep -q '"sqlite3"' "$pkg" 2>/dev/null       && CAP_database="sqlite" || true
+  # WebSocket detection
+  grep -q '"ws"' "$pkg" 2>/dev/null            && CAP_websocket="true" || true
+  grep -q '"socket.io"' "$pkg" 2>/dev/null     && CAP_websocket="true" || true
 
   # Also check backend/package.json if it exists
   local bpkg="$PROJECT_ROOT/backend/package.json"
@@ -307,6 +312,8 @@ detect_node_project() {
     grep -q '"mysql2"' "$bpkg" 2>/dev/null    && CAP_database="mysql" || true
     grep -q '"pg"' "$bpkg" 2>/dev/null        && CAP_database="postgresql" || true
     grep -q '"vitest"' "$bpkg" 2>/dev/null    && CAP_testing="vitest" || true
+    grep -q '"ws"' "$bpkg" 2>/dev/null        && CAP_websocket="true" || true
+    grep -q '"socket.io"' "$bpkg" 2>/dev/null && CAP_websocket="true" || true
   fi
 
   # Install command (based on lock file type)
@@ -361,6 +368,15 @@ detect_node_project() {
   # Cross-compile detection (agent directory)
   if [ -d "$PROJECT_ROOT/agent" ] && [ -f "$PROJECT_ROOT/agent/main.go" ]; then
     CAP_cross_compile="true"
+    # Agent version file
+    for vf in "agent/version/version.json" "agent/version.json" "agent/VERSION"; do
+      if [ -f "$PROJECT_ROOT/$vf" ]; then
+        DET_AGENT_VERSION_FILE="$vf"
+        break
+      fi
+    done
+    # Agent build command
+    DET_AGENT_BUILD_CMD="cd agent && GOOS=linux GOARCH=amd64 go build -o omniprobe ."
   fi
 }
 
@@ -414,7 +430,7 @@ grep_python_deps() {
     grep -qi "$dep" "$PROJECT_ROOT/Pipfile" 2>/dev/null && found=true
   fi
 
-  $found
+  [ "$found" = "true" ]
 }
 
 detect_python_project() {
@@ -544,14 +560,14 @@ detect_bash_project() {
   fi
   if [ "$bats_found" = false ]; then
     local bats_files
-    bats_files=$(find "$PROJECT_ROOT/test" "$PROJECT_ROOT/tests" -name "*.bats" 2>/dev/null | head -1 || true)
+    bats_files=$(find "$PROJECT_ROOT/tests" "$PROJECT_ROOT/test" -name "*.bats" 2>/dev/null | head -1 || true)
     [ -n "$bats_files" ] && bats_found=true
   fi
   if [ "$bats_found" = true ]; then
     CAP_testing="bats"
     if [ -d "$PROJECT_ROOT/tests" ]; then
       TEST_CMD="bats tests/"
-    else
+    elif [ -d "$PROJECT_ROOT/test" ]; then
       TEST_CMD="bats test/"
     fi
   fi
@@ -663,6 +679,8 @@ generate_claude_md() {
   DET_FE_STACK_V="$DET_FE_STACK" \
   DET_BE_STACK_V="$DET_BE_STACK" \
   DET_LOCALE_LIST_V="$DET_LOCALE_LIST" \
+  DET_AGENT_VER_V="$DET_AGENT_VERSION_FILE" \
+  DET_AGENT_BUILD_V="$DET_AGENT_BUILD_CMD" \
   awk -v cap_fe="$CAP_frontend" \
       -v cap_be="$CAP_backend_api" \
       -v cap_db="$CAP_database" \
@@ -685,6 +703,9 @@ generate_claude_md() {
     gsub(/&/, "\\&", s)
     return s
   }
+  function capitalize(s) {
+    return toupper(substr(s,1,1)) substr(s,2)
+  }
   BEGIN {
     install_cmd = ENVIRON["INSTALL_CMD_V"]
     dev_cmd     = ENVIRON["DEV_CMD_V"]
@@ -695,6 +716,8 @@ generate_claude_md() {
     fe_stack    = ENVIRON["DET_FE_STACK_V"]
     be_stack    = ENVIRON["DET_BE_STACK_V"]
     locale_list = ENVIRON["DET_LOCALE_LIST_V"]
+    agent_ver   = ENVIRON["DET_AGENT_VER_V"]
+    agent_build = ENVIRON["DET_AGENT_BUILD_V"]
   }
   {
     gsub(/\$FRONTEND_FRAMEWORK/, esc((cap_fe != "false") ? cap_fe : todo))
@@ -723,7 +746,7 @@ generate_claude_md() {
     gsub(/\$BACKEND_LAYERS/, esc(todo))
     gsub(/\$KEY_SERVICE_FILES/, esc(todo))
     gsub(/\$INDENTATION/, indent)
-    gsub(/\$LANGUAGE/, (cap_st != "false") ? cap_st : "JavaScript")
+    gsub(/\$LANGUAGE/, (cap_st != "false") ? capitalize(cap_st) : "JavaScript")
     gsub(/\$TYPES_FILE/, esc((types_file != "") ? types_file : todo))
     gsub(/\$ROUTES_DIR/, esc((routes_dir != "") ? routes_dir : todo))
     gsub(/\$API_SERVICE_FILE/, esc((api_file != "") ? api_file : todo))
@@ -732,6 +755,8 @@ generate_claude_md() {
     gsub(/\$CSS_FRAMEWORK/, esc((cap_ds != "false") ? cap_ds : todo))
     gsub(/\$TOKEN_CONFIG_FILE/, esc((token_config != "") ? token_config : todo))
     gsub(/\$DB_ACCESS_FILE/, esc((db_file != "") ? db_file : todo))
+    gsub(/\$AGENT_VERSION_FILE/, esc((agent_ver != "") ? agent_ver : todo))
+    gsub(/\$AGENT_BUILD_COMMAND/, esc((agent_build != "") ? agent_build : todo))
     print
   }' "$template" > "$CLAUDE_MD"
 
@@ -797,7 +822,10 @@ CAPEOF
       [ "$cap_val" = "false" ] && continue
       # Replace "| cap_name | false |" with "| cap_name | detected_val |"
       if grep -q "| ${cap_name} | false" "$CLAUDE_MD" 2>/dev/null; then
-        sed "s/| ${cap_name} | false/| ${cap_name} | ${cap_val}/" "$CLAUDE_MD" > "$tmp" && mv "$tmp" "$CLAUDE_MD"
+        # Escape sed special chars in cap_val (/, &, \)
+        local safe_val
+        safe_val=$(printf '%s\n' "$cap_val" | sed 's/[\/&\\]/\\&/g')
+        sed "s/| ${cap_name} | false/| ${cap_name} | ${safe_val}/" "$CLAUDE_MD" > "$tmp" && mv "$tmp" "$CLAUDE_MD"
         updated=$((updated + 1))
       fi
     done
@@ -988,8 +1016,11 @@ extract_ps_values() {
     [ -d "$PROJECT_ROOT/backend/src/routes" ] || routes_dir="src/routes/"
     services_dir="backend/src/services/"
     [ -d "$PROJECT_ROOT/backend/src/services" ] || services_dir="src/services/"
-    types_file="types.ts"
-    [ -f "$PROJECT_ROOT/types.ts" ] || [ -f "$PROJECT_ROOT/src/types.ts" ] && types_file="types.ts"
+    if [ -f "$PROJECT_ROOT/src/types.ts" ]; then
+      types_file="src/types.ts"
+    else
+      types_file="types.ts"
+    fi
 
     file_struct="前端：\`src/components/FeatureName/\`（主组件、子组件、自定义 Hook），API 调用更新 \`$api_file\`，类型更新 \`$types_file\`。后端：路由放 \`$routes_dir\`，服务放 \`$services_dir\`。"
   elif [ "$CAP_frontend" != "false" ]; then
@@ -1074,20 +1105,10 @@ extract_ps_values() {
     fi
   fi
 
-  # 12. 后端服务地址 (from Architecture section)
+  # 12. 后端服务地址 (from CLAUDE.md overview)
   if [ -f "$CLAUDE_MD" ] && [ "$CAP_backend_api" != "false" ]; then
-    local be_addr=""
-    be_addr=$(extract_md_section "Architecture" | awk '
-      /port [0-9]+/ || /localhost:[0-9]+/ || /:[0-9]+/ {
-        if (match($0, /[0-9]+/)) {
-          # Try to extract backend port
-        }
-      }
-      /[Bb]ackend.*:[0-9]+/ { print; exit }
-    ')
-    # Simple: extract from CLAUDE.md overview
     local be_port=""
-    be_port=$(grep -oE '[Bb]ackend.*port ([0-9]+)' "$CLAUDE_MD" 2>/dev/null | grep -oE '[0-9]+' | head -1)
+    be_port=$(grep -oE '[Bb]ackend.*port ([0-9]+)' "$CLAUDE_MD" 2>/dev/null | grep -oE '[0-9]+' | head -1) || true
     if [ -n "$be_port" ]; then
       add_ps "后端服务地址" "  - REST API: \`http://localhost:$be_port/api/\`"
     fi
@@ -1114,6 +1135,10 @@ validate_claude_md() {
     fi
   done
   IFS="$OLD_IFS"
+
+  if [ "$missing" -gt 0 ]; then
+    WARNINGS=$((WARNINGS + missing))
+  fi
 
   local todo_count
   todo_count=$(grep -c 'TODO' "$CLAUDE_MD" 2>/dev/null) || todo_count=0
@@ -1156,7 +1181,8 @@ create_directories() {
 
   # Create skill subdirectories
   for skill in f-product f-dev f-bugfix f-design \
-               f-test f-context f-workspace f-clean f-doc f-init; do
+               f-test f-context f-workspace f-clean f-doc f-init \
+               f-analyze f-revise; do
     if [ "$DRY_RUN" = true ]; then
       verbose "[DRY-RUN] mkdir -p $TARGET_DIR/skills/$skill"
     else
@@ -1166,10 +1192,12 @@ create_directories() {
 }
 
 install_skills() {
-  info "安装 Skills（10 个）..."
-
   # Skills that are direct copy
-  local copy_skills="f-dev f-bugfix f-design f-product f-test f-doc f-init f-context f-workspace f-clean"
+  local copy_skills="f-dev f-bugfix f-design f-product f-test f-doc f-init f-context f-workspace f-clean f-analyze f-revise"
+  local skill_count_expected
+  # shellcheck disable=SC2086
+  skill_count_expected=$(echo $copy_skills | wc -w | tr -d ' ')
+  info "安装 Skills（${skill_count_expected} 个）..."
   for skill in $copy_skills; do
     local src="$TEMPLATE_DIR/skills/$skill/SKILL.md"
     local dst="$TARGET_DIR/skills/$skill/SKILL.md"
@@ -1305,12 +1333,17 @@ validate_all() {
   skill_count=$(find "$TARGET_DIR/skills" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
   hook_count=$(find "$TARGET_DIR/hooks" -name "*.sh" 2>/dev/null | wc -l | tr -d ' ')
 
-  if [ "$skill_count" -ne 10 ]; then
-    error "Skills 数量 $skill_count != 10"
+  # Expected counts: derived from template directory
+  local expected_skills expected_hooks
+  expected_skills=$(find "$TEMPLATE_DIR/skills" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
+  expected_hooks=$(find "$TEMPLATE_DIR/hooks" -name "*.sh" 2>/dev/null | wc -l | tr -d ' ')
+
+  if [ "$skill_count" -ne "$expected_skills" ]; then
+    error "Skills 数量 $skill_count != $expected_skills"
     errors=$((errors + 1))
   fi
-  if [ "$hook_count" -ne 6 ]; then
-    error "Hooks 数量 $hook_count != 6"
+  if [ "$hook_count" -ne "$expected_hooks" ]; then
+    error "Hooks 数量 $hook_count != $expected_hooks"
     errors=$((errors + 1))
   fi
   if [ ! -f "$TARGET_DIR/settings.json" ]; then
@@ -1391,10 +1424,13 @@ output_report() {
   echo "  static-types:  $CAP_static_types"
   echo "  websocket:     $CAP_websocket (派生)"
   echo ""
+  local report_skill_count report_hook_count
+  report_skill_count=$(find "$TARGET_DIR/skills" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
+  report_hook_count=$(find "$TARGET_DIR/hooks" -name "*.sh" 2>/dev/null | wc -l | tr -d ' ')
   echo "--- 安装统计 ---"
   echo "  已安装文件: $INSTALLED_FILES"
-  echo "  Skills:     10 (直接复制)"
-  echo "  Hooks:       6 (含配置填充)"
+  echo "  Skills:     $report_skill_count (直接复制)"
+  echo "  Hooks:      $report_hook_count (含配置填充)"
   echo "  Scripts:     $INSTALLED_SCRIPTS"
   echo "  Settings:    1"
   echo ""
@@ -1425,7 +1461,7 @@ output_report() {
 
   # Inline PS count (items kept as template defaults)
   local ps_inline
-  ps_inline=$(grep -rc '<!-- PROJECT-SPECIFIC:' "$TARGET_DIR/skills/" 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
+  ps_inline=$(grep -rc '<!-- PROJECT-SPECIFIC:' "$TARGET_DIR/skills/" 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}') || true
   if [ "$ps_inline" -gt 0 ]; then
     echo "--- 内联 PS 标记 ---"
     echo "  $ps_inline 个 PROJECT-SPECIFIC 标记保留为模板默认值"
@@ -1496,19 +1532,43 @@ upgrade_mode() {
   if [ "$DRY_RUN" != true ] && [ -d "$backup_dir" ]; then
     info "变更摘要:"
     local changed=0
+    local added=0
+    local removed=0
+    # 检测变更和已删除的文件（遍历旧文件）
     for dir in skills hooks scripts; do
       if [ -d "$backup_dir/$dir" ]; then
         while IFS= read -r old_file; do
           local rel_path="${old_file#$backup_dir/}"
           local new_file="$TARGET_DIR/$rel_path"
-          if [ -f "$new_file" ] && ! diff -q "$old_file" "$new_file" >/dev/null 2>&1; then
+          if [ ! -f "$new_file" ]; then
+            verbose "  删除: $rel_path"
+            removed=$((removed + 1))
+          elif ! diff -q "$old_file" "$new_file" >/dev/null 2>&1; then
             verbose "  变更: $rel_path"
             changed=$((changed + 1))
           fi
         done < <(find "$backup_dir/$dir" -type f 2>/dev/null)
       fi
     done
-    info "共 $changed 个文件有变更"
+    # 检测新增文件（遍历新文件，查找 backup 中不存在的）
+    for dir in skills hooks scripts; do
+      if [ -d "$TARGET_DIR/$dir" ]; then
+        while IFS= read -r new_file; do
+          local rel_path="${new_file#$TARGET_DIR/}"
+          local old_file="$backup_dir/$rel_path"
+          if [ ! -f "$old_file" ]; then
+            verbose "  新增: $rel_path"
+            added=$((added + 1))
+          fi
+        done < <(find "$TARGET_DIR/$dir" -type f 2>/dev/null)
+      fi
+    done
+    local summary=""
+    [ "$changed" -gt 0 ] && summary="${summary}${changed} 个变更"
+    [ "$added" -gt 0 ] && { [ -n "$summary" ] && summary="${summary}、"; summary="${summary}${added} 个新增"; }
+    [ "$removed" -gt 0 ] && { [ -n "$summary" ] && summary="${summary}、"; summary="${summary}${removed} 个删除"; }
+    [ -z "$summary" ] && summary="无变更"
+    info "共 $summary"
   fi
 }
 

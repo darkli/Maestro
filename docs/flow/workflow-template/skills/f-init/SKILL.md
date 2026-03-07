@@ -1,7 +1,7 @@
 ---
 name: f-init
 description: 工作流初始化与升级：根据 CLAUDE.md 自动生成项目定制化的 Skills 和 Hooks。支持 `-u` 升级模式。当用户说"初始化工作流"、"安装开发流程"、"升级工作流"时使用。
-version: 6.1.0
+version: 6.3.0
 ---
 
 # 工作流初始化 Skill

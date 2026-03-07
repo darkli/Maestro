@@ -22,7 +22,6 @@ CLAUDE_DIR="$PROJECT_ROOT/.claude"
 # ============================================================
 # DELETE_TARGETS 使用换行分隔的字符串（bash 3.2 兼容，不用数组）
 DELETE_TARGETS=".claude/skills/|dir|skills
-.claude/agents/|dir|agents
 .claude/hooks/|dir|hooks
 .claude/settings.json|file|settings"
 
@@ -41,7 +40,7 @@ PRESERVE_TARGETS=".claude/context/|跨对话上下文数据
 
 # 统计目录中指定文件类型的数量，生成描述字符串
 # 用法: count_dir_content ".claude/skills/" "dir"
-# 返回: "10 个 Skill" / "6 个 Hook" / 目录或文件计数
+# 返回: "12 个 Skill" / "6 个 Hook" / 目录或文件计数
 count_dir_content() {
   local rel_path="$1"
   local item_type="$2"
